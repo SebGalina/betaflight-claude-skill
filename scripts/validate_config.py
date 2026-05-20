@@ -20,6 +20,9 @@ Exit codes:
 import sys
 from pathlib import Path
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
 # Reuse the parser
 sys.path.insert(0, str(Path(__file__).parent))
 from parse_diff import parse  # noqa: E402

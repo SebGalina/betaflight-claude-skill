@@ -79,6 +79,63 @@ When a user shares a CLI diff, run `scripts/parse_diff.py` on it to get structur
 
 Default to **Betaflight 4.5.x** conventions unless the user specifies otherwise. If the user mentions 4.6 (current dev/release branch), check `references/version-changes.md` for the differences. If the user is on 4.4 or older, suggest upgrading after the diagnostic, not before — old tunes don't translate cleanly across major versions.
 
+## Working with Claude in Chrome on app.betaflight.com
+
+Betaflight Configurator exists in two forms. Only one of them works with Claude in Chrome:
+
+| Version | Claude in Chrome? |
+|---------|-------------------|
+| **PWA** — `https://app.betaflight.com` (Chrome/Edge/Opera, WebSerial/WebUSB) | ✅ Yes |
+| **Desktop Electron** (`.exe` / `.dmg` / `.deb`) | ❌ No — outside the browser |
+
+The PWA requires a Chromium-based browser. Firefox and Safari do not support WebSerial.
+
+### What Claude in Chrome can do on the PWA
+
+- Navigate to `app.betaflight.com` and click through any tab (CLI, PID Tuning, Configuration, Modes, Motors, Ports, Failsafe, Receiver, OSD)
+- Read values displayed in the DOM
+- Type commands in the CLI tab (`set xxx = yyy`, `diff all`, `save`)
+- Capture the CLI output and analyse it with this skill
+
+### What Claude in Chrome cannot do
+
+- **Click the WebSerial port-selection popup** — this is native browser UI, outside the DOM. The user must click it.
+- **Control the Electron desktop app** — Claude in Chrome only operates within the browser.
+- **Test or arm motors** — always props-off, always the human's decision. No exception.
+- **Re-connect after a reboot** — after `save`, the FC reboots and the WebSerial popup reappears; the user must click it.
+
+### Assisted workflow
+
+| Step | Who |
+|------|-----|
+| 1. Plug FC into USB | Human |
+| 2. Open `app.betaflight.com` | Claude |
+| 3. Click "Select your device" in the native popup | **Human** (popup is outside DOM) |
+| 4. Navigate to CLI tab | Claude |
+| 5. Type `diff all`, read full output | Claude |
+| 6. Analyse config with this skill, suggest changes | Claude |
+| 7. Type each `set xxx = yyy` change | Claude |
+| 8. Type `save` — **only after explicit human confirmation** | Claude (with human go-ahead) |
+| 9. Re-connect after FC reboot (popup reappears) | **Human** |
+| 10. Motor direction / calibration / first arm test | **Human only** |
+
+### Safety rules in a Chrome-assisted session
+
+- **Never run `save` automatically** without the user confirming the changes first. `save` reboots the FC and commits changes to flash.
+- **Never automate motor-related commands** (`motor`, `beeper`, `dshotprog`) — always prompt the user to remove props and confirm.
+- When multiple changes are batched, show the full set to the user before applying any of them.
+- If Claude in Chrome encounters an unexpected page state (wrong tab, connection lost, unrecognised UI), stop and ask the user rather than guessing.
+
+### Loading the skill files in claude.ai
+
+If you're using claude.ai (not Claude Code), upload the following files at the start of the conversation:
+
+1. `SKILL.md` — skill definition and instructions
+2. `references/pid-tuning.md`, `references/troubleshooting.md`, `references/parameters.md` — reference knowledge
+3. `assets/presets/` — starter CLI snippets (optional)
+
+The Python scripts (`parse_diff.py`, `validate_config.py`) are for Claude Code sessions only.
+
 ## Bundled resources
 
 - `references/cli-commands.md` — Betaflight CLI command reference
