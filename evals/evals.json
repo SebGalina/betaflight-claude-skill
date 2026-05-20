@@ -1,0 +1,40 @@
+{
+  "skill_name": "betaflight",
+  "evals": [
+    {
+      "id": 1,
+      "name": "diagnose-wobble-from-symptoms",
+      "prompt": "Mon drone 5 pouces wobble en yaw quand je fais des virages serrés, c'est nouveau depuis que j'ai changé mes hélices. Qu'est-ce que je peux faire ?",
+      "expected_output": "Diagnostic prioritizing mechanical causes (prop balance, motor mount) over PID tuning, since the issue appeared after a hardware change. Should NOT immediately recommend PID changes.",
+      "files": []
+    },
+    {
+      "id": 2,
+      "name": "generate-cli-config-5inch",
+      "prompt": "Génère-moi une config CLI de base pour un 5\" freestyle avec moteurs 2207 1750KV en 6S, FC F7, ELRS sur UART2",
+      "expected_output": "A complete CLI snippet with motor protocol, RX serial setup on UART2, filter settings, PID profile, and rates. Should include 'save' at the end and warn about props-off testing.",
+      "files": []
+    },
+    {
+      "id": 3,
+      "name": "analyze-shared-diff",
+      "prompt": "Voici mon diff Betaflight, regarde si tout est cohérent et dis-moi ce qui pourrait être amélioré.",
+      "expected_output": "Should run parse_diff.py on the file, summarize the build (version, target, RX, motor config), flag any deprecated params or anomalies, and suggest changes with clear rationale.",
+      "files": ["sample_diff.txt"]
+    },
+    {
+      "id": 4,
+      "name": "migration-4.4-to-4.5",
+      "prompt": "Je passe de Betaflight 4.4 à 4.5 sur mon cinewhoop, quels paramètres je dois revoir ?",
+      "expected_output": "Should reference version-changes.md, list the renamed params (d_min_* removed, dyn_notch_width_percent → dyn_notch_q), and walk through the migration workflow (backup, erase, replay selectively).",
+      "files": []
+    },
+    {
+      "id": 5,
+      "name": "hot-motors-troubleshooting",
+      "prompt": "Après chaque vol mes moteurs sont brûlants au point que je peux à peine les toucher. Build neuf, 5\" 2207 2400KV en 6S.",
+      "expected_output": "Ranked diagnostic: D too high or D-term filter too open as primary suspects; check for mechanical vibration; suggest specific CLI changes (lower d_pitch/d_roll by 5, tighten dterm_lowpass_dyn_max_hz). Warn about thermal damage risk.",
+      "files": []
+    }
+  ]
+}

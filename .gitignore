@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.claude/
+
+# Skill packaging artifacts
+*.skill
+*.zip
+dist/
+build/
+
+# Eval workspace (generated during testing, not source)
+betaflight-workspace/
+evals/iteration-*/
+evals/feedback.json
+
+# Local testing files (not part of the skill)
+test_*.txt
+*.bbl
+*.bfl
+!evals/sample_diff.txt
+
+# Secrets / personal configs
+.env
+*.local
+my_*.txt
+
+# Personal project notes (not for public repo)
+NOTES.md
