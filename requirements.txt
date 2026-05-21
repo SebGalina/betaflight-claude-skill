@@ -1,4 +1,4 @@
-# Required only for analyze_blackbox.py --stats and --csv modes.
-# Header parsing (default), --json, and parse_diff.py are stdlib-only.
+# analyze_blackbox.py --stats / --csv, and step_response.py
 numpy>=1.24.0
 pandas>=2.0.0
+scipy>=1.10.0

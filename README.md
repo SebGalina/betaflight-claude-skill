@@ -114,7 +114,7 @@ The skill's test cases live in `evals/evals.json`.
 
 ## ⚠️ Limitations
 
-- **No FFT / noise spectra.** The blackbox analyzer decodes real values and computes time-domain statistics; for frequency analysis use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
+- **No FFT / noise spectra.** The blackbox analyzer decodes real values and computes time-domain statistics; for frequency analysis use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox. Step response analysis is available via `scripts/step_response.py`.
 - **Defaults to Betaflight 2025.12 conventions.** 4.5.x and older configs may contain deprecated or renamed parameters; the skill flags them but does not auto-migrate.
 - **No real-time link to the flight controller.** The skill works on files and descriptions — it does not talk to a USB-connected FC. (Claude in Chrome can drive the `app.betaflight.com` PWA; see `SKILL.md`.)
 

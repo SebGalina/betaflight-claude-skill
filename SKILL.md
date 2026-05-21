@@ -184,4 +184,5 @@ The Python scripts are meant to be **executed** whenever a code-execution enviro
 - `scripts/blackbox_decoder.py` — Pure-Python blackbox decoder (faithful port of the official log-viewer); used by `analyze_blackbox.py`
 - `scripts/blackbox_presenter.py` — Human-readable presentation layer: scales raw values to physical units, decodes enum headers, and computes rates in °/s; used by `analyze_blackbox.py` and `parse_diff.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors
+- `scripts/step_response.py` — Closed-loop step response analyser (setpoint → gyro) using Welch's cross-spectral method; rise time, overshoot, settling time, delay, per-axis diagnosis
 - `assets/presets/` — Starter CLI snippets per build class (3", 5" freestyle, 7" longrange, cinewhoop)
