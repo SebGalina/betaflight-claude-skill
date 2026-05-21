@@ -1,138 +1,292 @@
 #!/usr/bin/env python3
 """
-analyze_blackbox.py — Lightweight blackbox log analyzer.
+analyze_blackbox.py — Betaflight blackbox log analyzer.
 
-This is a TEXT-LEVEL analyzer for Betaflight blackbox logs. For full FFT
-analysis use https://blackbox.betaflight.com or PIDtoolbox. This script
-extracts headers, flight stats, and surfaces obvious tune red flags from
-the log's CLI-dumped settings header.
+Parses Betaflight blackbox logs (.bbl/.bfl/.txt). By default it parses ALL
+headers of every log session and prints a readable summary. On demand it can
+fully decode the binary frame stream (I/P/S/G/H/E frames) using the field
+encodings and predictors — the real flight data — and emit per-field
+statistics, a CSV export, or a JSON document.
+
+Decoding is a pure-Python port of the official blackbox-log-viewer; the
+heavy lifting lives in blackbox_decoder.py. numpy/pandas are used here only
+for statistics and CSV export.
 
 Usage:
-    python analyze_blackbox.py <path_to_log.bbl>
+    python analyze_blackbox.py <log>                 # headers + summary
+    python analyze_blackbox.py <log> --decode        # also decode frames
+    python analyze_blackbox.py <log> --stats         # per-field statistics
+    python analyze_blackbox.py <log> --csv out.csv   # export main frames to CSV
+    python analyze_blackbox.py <log> --csv -         # CSV to stdout
+    python analyze_blackbox.py <log> --json          # everything as JSON
+    python analyze_blackbox.py <log> --session 2     # pick a log session
 
-Outputs:
-    - Detected firmware/target/build info
-    - Embedded settings dump summary
-    - Flight session count and rough duration
-    - Surface-level warnings (filters, dshot bidir, etc.)
-
-Limitations:
-    - Does NOT do FFT / noise analysis (requires log decode + signal processing)
-    - For real PID tune analysis, point users to PIDtoolbox or the online viewer
+Flags --stats and --csv imply --decode. For full FFT / noise analysis still
+prefer https://blackbox.betaflight.com or PIDtoolbox.
 """
 
-import re
+import argparse
+import json
 import sys
 from pathlib import Path
 
-# Reuse parser for embedded settings
 sys.path.insert(0, str(Path(__file__).parent))
-from parse_diff import parse  # noqa: E402
+import blackbox_decoder as bb  # noqa: E402
+
+# Header config keys worth surfacing in the human summary (when present).
+_SUMMARY_KEYS = [
+    ("Firmware revision", "Firmware"),
+    ("Board information", "Board"),
+    ("Craft name", "Craft"),
+    ("Log start datetime", "Logged at"),
+    ("looptime", "Looptime (us)"),
+    ("gyro_sync_denom", "Gyro sync denom"),
+    ("pid_process_denom", "PID process denom"),
+    ("motor_pwm_protocol", "Motor protocol"),
+    ("dshot_bidir", "Bidir DSHOT"),
+    ("debug_mode", "Debug mode"),
+]
 
 
-def analyze(path: Path) -> dict:
-    """Analyze a blackbox log file at the header level."""
-    # Read as binary then decode lossy — blackbox files are binary with
-    # ASCII headers at the start of each log section
-    with open(path, "rb") as f:
-        raw = f.read(200_000)  # First 200KB usually covers all headers
+def _tune_warnings(sys_config: dict) -> list[str]:
+    """Surface-level red flags derived from the embedded header config."""
+    warnings = []
+    bidir = sys_config.get("dshot_bidir")
+    if bidir in (0, None, "0"):
+        warnings.append(
+            "Bidirectional DSHOT not enabled - RPM filter inactive, dynamic notch quality reduced"
+        )
+    motor_limit = sys_config.get("motor_output_limit")
+    if isinstance(motor_limit, (int, float)) and motor_limit < 100:
+        warnings.append(f"motor_output_limit = {motor_limit} (<100): motors are being capped")
+    dyn_count = sys_config.get("dyn_notch_count")
+    if isinstance(dyn_count, (int, float)) and dyn_count == 0:
+        warnings.append("dyn_notch_count = 0: dynamic notch filtering disabled")
+    return warnings
 
-    text = raw.decode("utf-8", errors="replace")
 
-    result: dict = {
+def analyze(path: Path, *, decode: bool, want_stats: bool, session_sel) -> dict:
+    raw = path.read_bytes()
+    ranges = bb.split_sessions(raw)
+
+    result = {
         "file": str(path),
-        "size_bytes": path.stat().st_size,
-        "log_sections": 0,
-        "firmware": None,
-        "target": None,
-        "craft_name": None,
-        "embedded_settings": None,
-        "warnings": [],
+        "size_bytes": len(raw),
+        "session_count": len(ranges),
+        "sessions": [],
     }
 
-    # Count log sections (each starts with "H Product:Blackbox")
-    result["log_sections"] = text.count("H Product:Blackbox")
-
-    # Firmware
-    m = re.search(r"H Firmware revision:Betaflight (\d+\.\d+\.\d+)", text)
-    if m:
-        result["firmware"] = m.group(1)
-
-    # Target
-    m = re.search(r"H Firmware target:(\S+)", text)
-    if m:
-        result["target"] = m.group(1)
-
-    # Craft name
-    m = re.search(r"H Craft name:(.+)", text)
-    if m:
-        result["craft_name"] = m.group(1).strip()
-
-    # Embedded settings — blackbox logs include "H " prefixed CLI lines
-    cli_lines = []
-    for line in text.splitlines():
-        if line.startswith("H ") and "=" in line:
-            # Format: "H paramname:value"
-            cli_match = re.match(r"H ([\w_]+):(.+)", line)
-            if cli_match:
-                cli_lines.append(f"set {cli_match.group(1)} = {cli_match.group(2)}")
-
-    if cli_lines:
-        embedded = parse("\n".join(cli_lines))
-        result["embedded_settings"] = {
-            "global_param_count": len(embedded["global"]),
-            "deprecated_count": len(embedded["deprecated"]),
-            "warnings": embedded["warnings"],
-        }
-        result["warnings"].extend(embedded["warnings"])
-
-    # Heuristics
-    if result["log_sections"] == 0:
-        result["warnings"].append(
+    if not ranges:
+        result["error"] = (
             "No blackbox log section markers found — file may be corrupt or not a Betaflight log"
         )
+        return result
+
+    for idx, (start, end) in enumerate(ranges, start=1):
+        if session_sel is not None and idx != session_sel:
+            continue
+        info = _analyze_session(raw, start, end, idx, decode=decode, want_stats=want_stats)
+        result["sessions"].append(info)
 
     return result
 
 
-def main() -> int:
-    if len(sys.argv) < 2:
-        print(__doc__, file=sys.stderr)
-        return 1
+def _analyze_session(raw, start, end, idx, *, decode, want_stats) -> dict:
+    parser = bb.FlightLogParser(raw, start, end)
+    info: dict = {"index": idx, "warnings": []}
+    try:
+        parser.parse_header()
+    except ValueError as exc:
+        info["error"] = str(exc)
+        return info
 
-    path = Path(sys.argv[1])
+    sc = parser.sys_config
+    info["sys_config"] = sc
+    info["frame_defs"] = {
+        marker: {"count": fd["count"], "fields": fd["name"]}
+        for marker, fd in parser.frame_defs.items()
+    }
+    info["warnings"] = _tune_warnings(sc)
+
+    if decode or want_stats:
+        parser.parse_data()
+        info["decoded"] = True
+        info["frame_stats"] = parser.stats["frame"]
+        info["corrupt_frames"] = parser.stats["total_corrupt_frames"]
+        info["main_frame_count"] = len(parser.main_frames)
+        info["gps_frame_count"] = len(parser.gps_frames)
+        info["event_count"] = len(parser.events)
+        info["duration_s"] = _duration_seconds(parser)
+        info["_parser"] = parser  # kept for stats/CSV; stripped before JSON
+        if want_stats:
+            info["field_stats"] = _field_statistics(parser)
+    return info
+
+
+def _duration_seconds(parser) -> float:
+    frames = parser.main_frames
+    if len(frames) < 2:
+        return 0.0
+    t0 = frames[0][bb.FIELD_INDEX_TIME]
+    t1 = frames[-1][bb.FIELD_INDEX_TIME]
+    return round((t1 - t0) / 1_000_000, 3)
+
+
+def _field_statistics(parser) -> dict:
+    import numpy as np
+
+    if not parser.main_frames:
+        return {}
+    arr = np.array(parser.main_frames, dtype=np.float64)
+    names = parser.main_field_names
+    stats = {}
+    for i, name in enumerate(names):
+        col = arr[:, i]
+        stats[name] = {
+            "min": float(np.min(col)),
+            "max": float(np.max(col)),
+            "mean": round(float(np.mean(col)), 4),
+            "std": round(float(np.std(col)), 4),
+        }
+    return stats
+
+
+def _write_csv(parser, dest: str) -> None:
+    import pandas as pd
+
+    df = pd.DataFrame(parser.main_frames, columns=parser.main_field_names)
+    if dest == "-":
+        df.to_csv(sys.stdout, index=False)
+    else:
+        df.to_csv(dest, index=False)
+
+
+# ---------------------------------------------------------------------------
+# Human-readable output
+# ---------------------------------------------------------------------------
+def _print_human(result: dict) -> None:
+    print("=" * 64)
+    print(f"Blackbox Log Analysis: {Path(result['file']).name}")
+    print("=" * 64)
+    print(f"File size:     {result['size_bytes']:,} bytes")
+    print(f"Log sessions:  {result['session_count']}")
+
+    if result.get("error"):
+        print(f"\n⚠ {result['error']}")
+        return
+
+    for s in result["sessions"]:
+        print(f"\n-- Session {s['index']} " + "-" * 48)
+        if s.get("error"):
+            print(f"  ! Header error: {s['error']}")
+            continue
+        sc = s["sys_config"]
+        for key, label in _SUMMARY_KEYS:
+            if key in sc and sc[key] not in (None, ""):
+                print(f"  {label + ':':<22}{sc[key]}")
+
+        fd = s["frame_defs"]
+        fd_summary = ", ".join(f"{m}={d['count']}" for m, d in fd.items())
+        print(f"  {'Frame field counts:':<22}{fd_summary}")
+
+        if s.get("decoded"):
+            print(f"  {'Duration:':<22}{s['duration_s']} s")
+            print(f"  {'Main frames:':<22}{s['main_frame_count']:,}")
+            if s["gps_frame_count"]:
+                print(f"  {'GPS frames:':<22}{s['gps_frame_count']:,}")
+            if s["event_count"]:
+                print(f"  {'Events:':<22}{s['event_count']}")
+            fs = s["frame_stats"]
+            counts = ", ".join(
+                f"{m}:{v['valid']}" for m, v in fs.items() if v["valid"]
+            )
+            print(f"  {'Valid frames:':<22}{counts}")
+            if s["corrupt_frames"]:
+                print(f"  {'Corrupt frames:':<22}{s['corrupt_frames']}")
+
+        if s.get("field_stats"):
+            print("\n  Per-field statistics (decoded units):")
+            print(f"    {'field':<22}{'min':>16}{'max':>16}{'mean':>16}{'std':>16}")
+            for name, st in s["field_stats"].items():
+                print(
+                    f"    {name:<22}{st['min']:>16.2f}{st['max']:>16.2f}"
+                    f"{st['mean']:>16.2f}{st['std']:>16.2f}"
+                )
+
+        if s["warnings"]:
+            print(f"\n  Warnings ({len(s['warnings'])}):")
+            for w in s["warnings"]:
+                print(f"    ! {w}")
+
+    print(
+        "\nNote: filter/PID red flags above are header-level heuristics. "
+        "For FFT / noise analysis use https://blackbox.betaflight.com or PIDtoolbox."
+    )
+
+
+def _strip_parsers(result: dict) -> dict:
+    for s in result.get("sessions", []):
+        s.pop("_parser", None)
+    return result
+
+
+def main() -> int:
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+    ap = argparse.ArgumentParser(description="Betaflight blackbox log analyzer")
+    ap.add_argument("log", help="path to a .bbl/.bfl/.txt blackbox log")
+    ap.add_argument("--decode", action="store_true", help="decode the binary frame stream")
+    ap.add_argument("--stats", action="store_true", help="per-field statistics (implies --decode)")
+    ap.add_argument("--csv", metavar="FILE", help="export decoded main frames to CSV ('-' for stdout)")
+    ap.add_argument("--json", action="store_true", help="emit JSON instead of a human summary")
+    ap.add_argument("--session", type=int, metavar="N", help="analyze only log session N (1-based)")
+    args = ap.parse_args()
+
+    path = Path(args.log)
     if not path.exists():
         print(f"Error: file not found: {path}", file=sys.stderr)
         return 1
 
-    result = analyze(path)
+    want_csv = args.csv is not None
+    decode = args.decode or args.stats or want_csv
 
-    print("=" * 60)
-    print(f"Blackbox Log Analysis: {path.name}")
-    print("=" * 60)
-    print(f"File size:       {result['size_bytes']:,} bytes")
-    print(f"Log sessions:    {result['log_sections']}")
-    print(f"Firmware:        {result['firmware'] or '(not detected)'}")
-    print(f"Target:          {result['target'] or '(not detected)'}")
-    print(f"Craft name:      {result['craft_name'] or '(not set)'}")
-
-    if result["embedded_settings"]:
-        es = result["embedded_settings"]
-        print(f"\nEmbedded settings:")
-        print(f"  Global params:    {es['global_param_count']}")
-        print(f"  Deprecated:       {es['deprecated_count']}")
-
-    if result["warnings"]:
-        print(f"\nWarnings ({len(result['warnings'])}):")
-        for w in result["warnings"]:
-            print(f"  ⚠ {w}")
-    else:
-        print("\nNo header-level warnings.")
-
-    print(
-        "\nNote: This is a header-only scan. For real noise/PID analysis,\n"
-        "use https://blackbox.betaflight.com or PIDtoolbox."
+    result = analyze(
+        path,
+        decode=decode,
+        want_stats=args.stats,
+        session_sel=args.session,
     )
+
+    # CSV export (writes the selected/first decoded session)
+    if want_csv:
+        target = next(
+            (s for s in result.get("sessions", []) if s.get("decoded") and s.get("_parser")),
+            None,
+        )
+        if target is None:
+            print("Error: no decodable session found for CSV export", file=sys.stderr)
+            return 1
+        if result["session_count"] > 1 and args.session is None and args.csv == "-":
+            print("Note: multiple sessions present; exporting session 1. Use --session N to choose.",
+                  file=sys.stderr)
+        _write_csv(target["_parser"], args.csv)
+        if args.csv != "-":
+            print(f"Wrote {len(target['_parser'].main_frames):,} main frames to {args.csv}",
+                  file=sys.stderr)
+
+    _strip_parsers(result)
+
+    if args.json:
+        json.dump(result, sys.stdout, indent=2, default=str)
+        print()
+    elif not (want_csv and args.csv == "-"):
+        _print_human(result)
+
     return 0
 
 

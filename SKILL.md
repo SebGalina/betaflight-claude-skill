@@ -21,7 +21,7 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
 
 1. **Identify the artifact type** the user is providing:
    - **CLI diff/dump** (text file or pasted block) → parse with `scripts/parse_diff.py`
-   - **Blackbox log** (`.bbl`/`.bfl`) → analyse with `scripts/analyze_blackbox.py`
+   - **Blackbox log** (`.bbl`/`.bfl`) → analyse with `scripts/analyze_blackbox.py` (full frame decode on demand)
    - **Description of flight behavior** with no file → diagnostic interview
    - **No artifact, generic question** → answer from `references/`
 
@@ -67,6 +67,25 @@ When a user shares a CLI diff, run `scripts/parse_diff.py` on it to get structur
 1. **Summarize the build** — frame size hint, RX protocol, ESC protocol, motor count, firmware version
 2. **Flag anomalies** — unusual values, deprecated parameters, common misconfigurations
 3. **Suggest improvements** — only changes that have a clear rationale
+
+### Analyzing a blackbox log
+
+`scripts/analyze_blackbox.py` parses **all** log headers by default and can fully decode the binary frame stream on demand (a pure-Python port of the official blackbox-log-viewer decoder). It needs `numpy` + `pandas` for the `--stats` and `--csv` modes.
+
+```
+python scripts/analyze_blackbox.py <log.bbl>             # headers + build summary (fast)
+python scripts/analyze_blackbox.py <log.bbl> --stats     # decode frames + per-field min/max/mean/std
+python scripts/analyze_blackbox.py <log.bbl> --csv out.csv   # decoded main frames to CSV ('-' for stdout)
+python scripts/analyze_blackbox.py <log.bbl> --json      # full structured output
+python scripts/analyze_blackbox.py <log.bbl> --session N # pick one of several concatenated logs
+```
+
+Workflow when a user shares a log:
+
+1. **Run headers first** (default mode) — read off firmware/target/craft, looptime, motor protocol, bidir DSHOT, and the embedded tune red flags.
+2. **Decode with `--stats`** if you need actual flight data — gyro/motor/eRPM ranges, accelerometer (Z ≈ acc_1G at hover), throttle/setpoint behaviour, and corrupt-frame counts.
+3. **Export with `--csv`** when the user wants the raw decoded series for a spreadsheet or external tool.
+4. This is a **time-domain** analyzer — it does not do FFT/noise spectra. For that, still point users to https://blackbox.betaflight.com or PIDtoolbox.
 
 ## Safety rules
 
@@ -134,7 +153,7 @@ If you're using claude.ai (not Claude Code), upload the following files at the s
 2. `references/pid-tuning.md`, `references/troubleshooting.md`, `references/parameters.md` — reference knowledge
 3. `assets/presets/` — starter CLI snippets (optional)
 
-The Python scripts (`parse_diff.py`, `validate_config.py`) are for Claude Code sessions only.
+The Python scripts (`parse_diff.py`, `validate_config.py`, `analyze_blackbox.py`, `blackbox_decoder.py`) are for Claude Code sessions only. `analyze_blackbox.py` additionally needs `numpy` + `pandas` for its `--stats` and `--csv` modes (header parsing and `--json` work with the standard library alone).
 
 ## Bundled resources
 
@@ -144,6 +163,7 @@ The Python scripts (`parse_diff.py`, `validate_config.py`) are for Claude Code s
 - `references/troubleshooting.md` — Symptom-to-cause map
 - `references/version-changes.md` — Migration notes between major versions
 - `scripts/parse_diff.py` — Parser for CLI diff/dump output
-- `scripts/analyze_blackbox.py` — Blackbox log analyzer (oscillation/noise detection)
+- `scripts/analyze_blackbox.py` — Blackbox log analyzer: parses all headers, decodes the full frame stream on demand, per-field stats and CSV export (CLI entry point)
+- `scripts/blackbox_decoder.py` — Pure-Python blackbox decoder (faithful port of the official log-viewer); used by `analyze_blackbox.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors
 - `assets/presets/` — Starter CLI snippets per build class (3", 5" freestyle, 7" longrange, cinewhoop)
