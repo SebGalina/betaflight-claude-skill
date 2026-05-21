@@ -90,7 +90,25 @@ Workflow when a user shares a log:
 2. **Decode with `--stats`** if you need actual flight data — gyro/motor/eRPM ranges, accelerometer (Z ≈ acc_1G at hover), throttle/setpoint behaviour, and corrupt-frame counts.
 3. **Export with `--csv`** when the user wants the raw decoded series for a spreadsheet or external tool.
 4. This is a **time-domain** analyzer — it does not do FFT/noise spectra. For that, still point users to https://blackbox.betaflight.com or PIDtoolbox.
-5. For **step response analysis**, run `scripts/step_response.py <log.bbl>`. It uses Welch's cross-spectral method (setpoint → gyro) and reports rise time, overshoot, settling time, delay, and per-axis diagnosis.
+5. For **step response analysis**, use `scripts/step_response.py`.
+
+```
+python scripts/step_response.py <log.bbl>                        # text report, all axes
+python scripts/step_response.py <log.bbl> --axis roll            # single axis
+python scripts/step_response.py <log.bbl> --bandpass --active-only   # best coherence (recommended)
+python scripts/step_response.py <log.bbl> --bandpass --active-only --axis yaw
+python scripts/step_response.py <log.bbl> --json                 # machine-readable
+python scripts/step_response.py <log.bbl> --csv curves.csv       # export response curves
+python scripts/step_response.py <log.bbl> --nperseg 2048         # larger Welch window
+python scripts/step_response.py <decoded.csv>                    # from analyze_blackbox --csv
+```
+
+**Signal quality flags** (improve coherence on noisy logs):
+- `--bandpass` — Butterworth 4th-order 5–80 Hz before Welch; removes DC drift and motor-frequency noise
+- `--active-only` — keeps only frames around fast stick inputs; drops hovering noise and propwash
+- `--nperseg N` — override Welch window size (default: auto ~64 ms, power of 2)
+
+**Always use `--bandpass --active-only`** for identification flights with deliberate step inputs. On a typical log this raises coherence from ~0.1 to 0.65–0.80+.
 
 **Step response — coherence warning**: the script reports a coherence value per axis (5–80 Hz band). Coherence < 0.5 on a freestyle or racing log is **normal and expected** — it means the gyro is driven by many things other than the setpoint (vibrations, propwash, non-linear PID terms like D_max and anti-gravity). The metrics are still indicative but not precise. For reliable coherence (> 0.7) the user needs a **dedicated identification flight**: deliberate full-stick → neutral → full-stick inputs, repeated 3–5 times per axis, with no other maneuvers. Always mention this when presenting step response results from a freestyle or racing log.
 

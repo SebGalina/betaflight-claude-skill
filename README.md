@@ -62,22 +62,44 @@ The `--stats` and `--csv` modes require `numpy` and `pandas`; header parsing and
 
 This is a **time-domain** analyzer (real decoded values, statistics, export). For FFT / noise spectra, use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
 
+### Step response analysis
+
+`scripts/step_response.py` estimates the closed-loop step response (setpoint → gyro) per axis using Welch's cross-spectral method. Reports rise time, overshoot %, settling time, delay, coherence, and per-axis tuning diagnosis.
+
+```bash
+# Any flight log — indicative results
+python scripts/step_response.py log.bbl
+
+# Identification flight (full-stick step inputs) — reliable results
+python scripts/step_response.py log.bbl --bandpass --active-only
+
+# Single axis, JSON output, or export curves
+python scripts/step_response.py log.bbl --bandpass --active-only --axis roll
+python scripts/step_response.py log.bbl --bandpass --active-only --json
+python scripts/step_response.py log.bbl --bandpass --active-only --csv curves.csv
+```
+
+**For reliable results** (coherence > 0.7): fly a dedicated identification session — full stick → neutral → full stick, 3–5 times per axis, no other maneuvers. Then run with `--bandpass --active-only`.
+
 ## 📦 Repository structure
 
 ```
 .
 ├── SKILL.md                  Skill definition + triggering description
 ├── references/               Docs loaded on demand
-│   ├── cli-commands.md       Betaflight CLI command reference
+│   ├── cli-commands.md       Betaflight CLI command reference (2025.12)
 │   ├── parameters.md         `set` parameters with safe ranges
 │   ├── pid-tuning.md         PID, filter, and rates tuning guide
+│   ├── configuration.md      Configurator tab navigation + all doc URLs
 │   ├── troubleshooting.md    Symptom-to-cause map
 │   └── version-changes.md    Migration notes between versions
 ├── scripts/                  Python tools
 │   ├── parse_diff.py         Parser for CLI diff/dump output
 │   ├── validate_config.py    Config sanity checker
 │   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)
-│   └── blackbox_decoder.py   Pure-Python blackbox frame decoder
+│   ├── blackbox_decoder.py   Pure-Python blackbox frame decoder
+│   ├── blackbox_presenter.py Human-readable scaling + enum decoding
+│   └── step_response.py      Closed-loop step response (Welch method)
 ├── assets/
 │   └── presets/              Starter CLI configs
 │       ├── 5inch-freestyle.txt
