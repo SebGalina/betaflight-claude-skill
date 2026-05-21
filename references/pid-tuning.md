@@ -2,98 +2,268 @@
 
 Use this file when the user asks for tuning advice — PIDs, filters, rates, feedforward. Diagnosis comes first; only recommend changes when the symptom is clear.
 
+> **Target version**: Betaflight 2025.12. Freestyle baseline values are for a 5" quad.
+
 ## Table of contents
 
 1. [Tuning order](#tuning-order)
-2. [PID tuning](#pid-tuning)
-3. [Filter tuning](#filter-tuning)
-4. [Rates tuning](#rates-tuning)
-5. [Feedforward](#feedforward)
-6. [Symptom map](#symptom-map)
+2. [VBat sag compensation](#vbat-sag-compensation)
+3. [PID tuning](#pid-tuning)
+4. [TPA](#tpa)
+5. [Anti-gravity](#anti-gravity)
+6. [iterm_relax](#iterm_relax)
+7. [Dynamic idle](#dynamic-idle)
+8. [Filter tuning](#filter-tuning)
+9. [Rates tuning](#rates-tuning)
+10. [Feedforward](#feedforward)
+11. [RC smoothing](#rc-smoothing)
+12. [Freestyle baseline (5")](#freestyle-baseline-5)
+13. [Symptom map](#symptom-map)
 
 ## Tuning order
 
-The correct order is **rates → feedforward → P → D → I → filters last**. Filters should be opened up (less filtering) only after PID/FF work is done, because filter lag interacts with PID gain.
+For freestyle, the official order is:
 
-For a new build the priority is:
-1. Get the build mechanically sound (balanced props, tight motors, no vibration source)
-2. Use Betaflight stock PIDs as a baseline
-3. Set rates to taste (don't tune PIDs to a rates problem)
-4. Bump feedforward if response feels laggy
-5. Only then touch P/D
-6. Open filters last if you want crisper feel and motors are cool
+1. Mechanical: balanced props, tight motors, no vibration source
+2. **VBat sag compensation** (before any PID work — ensures consistent feel throughout battery)
+3. **PID**: start with D, then P proportionally; leave I for last
+4. **Feedforward**
+5. **Dynamic D** (disable for consistency, or tune ceiling for racing)
+6. **TPA** (only if high-throttle oscillations remain after PID)
+7. **iterm_relax**
+8. **Anti-gravity**
+9. **Dynamic idle**
+10. **RC smoothing**
+11. **Filters last** (open up only after PID/FF work; filter lag interacts with PID gain)
+
+For racing/general use, a simpler order works: stock PIDs → rates → FF → P → D → I → filters.
+
+## VBat sag compensation
+
+Compensates motor output for voltage sag, giving consistent throttle feel throughout the battery pack.
+
+```
+set vbat_sag_lpf_period = 200   # 20-second averaging window
+set vbat_sag_compensation = 60  # Range 40–70 for freestyle; 90 for very consistent feel
+```
+
+⚠️ `vbat_sag_compensation = 100` pushes motors hard at low voltage and can damage packs chemically. Stay ≤ 70 for freestyle, ≤ 90 as an upper limit.
 
 ## PID tuning
 
 ### What each term does
 
-- **P (Proportional)**: how hard the FC corrects toward the setpoint. Too low = soft/slow; too high = oscillation (high-frequency rapid shake).
+- **P (Proportional)**: how hard the FC corrects toward the setpoint. Too low = soft/mushy; too high = high-frequency oscillation on hard cornering.
 - **I (Integral)**: holds the craft at setpoint under sustained load (wind, payload). Too low = drift; too high = bounce-back when stopping a maneuver.
-- **D (Derivative)**: damping, opposes change. Too low = bouncy/overshoot; too high = hot motors, propwash worse, noise.
+- **D / Derivative**: base damping in smooth flight, opposes change. Too low = bouncy/overshoot; too high = hot motors, propwash worse, noise.
+- **D_max**: peak D value applied during fast stick inputs. D rises from Derivative toward D_max when you flip fast, then drops back for straight-line flight. Set `d_max_roll = d_roll` (equal) to disable dynamic D and get a fixed D value (recommended for freestyle consistency).
 - **F (Feedforward)**: anticipates stick input, drives output ahead of P. No oscillation cost. Too high = twitchy/overshoot on stick inputs.
+
+In 2025.12: `d_roll` = base D, `d_max_roll` = peak D. This is reversed from 4.5 naming — do not paste PID diffs between versions.
 
 ### How to bump
 
-Change one axis (pitch or roll) at a time, ±5 at a time, fly a quick test, compare. Yaw last.
+Change one axis (pitch or roll) at a time, ±5 at a time, fly a quick test, compare. Yaw last. Use PID profile switching (3-way AUX) to A/B/C in flight.
 
-Tuning tools: PID profile switch on a stick (assign 3 profiles in Configurator → Modes), so you can A/B/C in flight.
+## TPA
 
-## Filter tuning
-
-Two filter chains: **gyro** (raw sensor) and **D-term** (after PID). Both have static and dynamic lowpass options.
-
-**Default 4.5 filters are conservative.** For a clean 5" freestyle build with bidirectional DSHOT:
+Throttle PID Attenuation — reduces P and D above a throttle threshold to prevent high-throttle oscillations.
 
 ```
-set gyro_lowpass_dyn_min_hz = 250
-set gyro_lowpass_dyn_max_hz = 500
-set dterm_lowpass_dyn_min_hz = 100
-set dterm_lowpass_dyn_max_hz = 200
-set dyn_notch_count = 3
-set dyn_notch_q = 300
+set tpa_rate = 0.45       # How much to reduce (0.40–0.50 for freestyle)
+set tpa_breakpoint = 1650 # Throttle value where reduction begins (1600–1750)
 ```
 
-If motors run hot or audio shows high-frequency whine on a flight recording, **tighten filters** (lower max_hz). If craft feels laggy and you have a clean build, **open filters** (raise min_hz).
+Only apply TPA after PID tuning is done at normal throttle. If oscillations persist above TPA breakpoint, also consider `thrust_linear`:
 
-### RPM filter
+```
+set thrust_linear = 20    # 20–40% is enough; no effect above mid-throttle
+```
 
-If your ESC supports bidirectional DSHOT (BLHeli_32 16.7+, BlueJay, AM32), enable:
+## Anti-gravity
+
+Temporarily boosts I during rapid throttle changes (punch, powerloop) to prevent attitude shift.
+
+```
+set anti_gravity_gain = 3.5   # Default; range 3.5–5 for freestyle
+```
+
+Higher values = more I boost during throttle chops. Increase if the craft pitches or rolls during fast throttle transitions.
+
+## iterm_relax
+
+Suppresses I accumulation during fast stick inputs to prevent bounce-back on flip exits.
+
+```
+set iterm_relax = RPY                # Apply to all axes
+set iterm_relax_type = SETPOINT      # Recommended
+set iterm_relax_cutoff = 15          # Lower = more relax. Ranges by build:
+                                     #   Racing: 30–40
+                                     #   Freestyle 5": 15
+                                     #   7"+: 10
+                                     #   X-Class: 3–5
+```
+
+If bounce-back persists, lower `iterm_relax_cutoff` before touching I.
+
+## Dynamic idle
+
+Maintains minimum motor RPM at zero throttle to prevent desyncs and improve low-throttle response. Requires bidirectional DSHOT.
 
 ```
 set dshot_bidir = ON
-set motor_poles = 14    # Check your motor spec
+set motor_poles = 14          # Verify against your motor spec (critical for RPM filter)
+set dynamic_idle_min_rpm = 35 # Roughly 3000–4000 RPM depending on poles; start at 35
 ```
 
-This activates the RPM filter, which tracks motor-frequency noise precisely. Dynamic notch then catches harmonics and frame resonance.
+⚠️ When using dynamic idle, set `transient_throttle_limit = 0`.
+
+## Filter tuning
+
+Two filter chains: **gyro** (raw sensor) and **D-term** (after D calculation). Both have lowpass and notch options.
+
+### Gyro lowpass
+
+In 2025.12, biquad is removed from the gyro path. Use PT1, PT2, or PT3 types. With RPM filtering active, the gyro LPF can be set very high (or disabled at 0) because the RPM notches handle motor-frequency noise.
+
+```
+set gyro_lpf1_static_hz = 0      # Disable static LPF1 when using RPM filter
+set gyro_lpf1_dyn_min_hz = 250
+set gyro_lpf1_dyn_max_hz = 500
+set gyro_lpf2_static_hz = 500    # Light anti-aliasing
+```
+
+### D-term lowpass
+
+```
+set dterm_lpf1_dyn_min_hz = 100
+set dterm_lpf1_dyn_max_hz = 200
+```
+
+### Dynamic notch
+
+Tracks frame resonances and motor harmonics not covered by the RPM filter.
+
+```
+set dyn_notch_count = 1     # Start with 1 for a clean 5" freestyle build
+set dyn_notch_q = 250       # Higher Q = narrower notch
+set dyn_notch_min_hz = 200  # Never set below 150; ≥200 recommended
+```
+
+If motors run hot or audio shows high-frequency whine, tighten filters (lower max_hz). If craft feels laggy on a clean build, open filters (raise min_hz).
+
+### RPM filter
+
+Requires bidirectional DSHOT. Tracks motor frequencies precisely.
+
+```
+set dshot_bidir = ON
+set motor_poles = 14              # Check your motor spec — wrong value → wrong filter frequencies
+set rpm_filter_min_hz = 80        # Default
+set rpm_filter_fade_range_hz = 50 # Default — smooth transition at low throttle
+```
+
+⚠️ `motor_poles` is critical. Most 5" motors have 14 magnets; verify on your specific motor.
 
 ## Rates tuning
 
-Rates control rotation speed per stick deflection. Not a PID issue — don't tune PIDs to fix a rates feel problem.
+Rates control rotation speed per stick deflection — not a PID issue. Don't tune PIDs to fix a rates problem.
 
-Recommended `rates_type = ACTUAL` for predictability. Common starting points:
+Use `rates_type = ACTUAL` for predictability (default in 2025.12):
 
-| Style | rc_rate | expo | srate | Max rate (°/s) |
-|-------|---------|------|-------|----------------|
-| Beginner | 7 | 0 | 67 | ~670 |
-| Freestyle | 12 | 40 | 80 | ~800 |
-| Racing | 14 | 30 | 90 | ~900 |
-| Cinematic | 5 | 50 | 50 | ~500 |
+| Style | center_sensitivity | max_rate | expo | Max (°/s) |
+|-------|--------------------|----------|------|-----------|
+| Beginner | 50 | 500 | 0 | ~500 |
+| Freestyle | 70 | 700 | 40 | ~700 |
+| Racing | 85 | 900 | 30 | ~900 |
+| Cinematic | 40 | 400 | 60 | ~400 |
 
-Adjust expo to taste: higher expo = softer center, sharper edges.
+Default in 2025.12: center_sensitivity=70, max=670°/s.
 
 ## Feedforward
 
 FF makes the craft follow stick inputs without lag — the FC predicts where the setpoint is going.
 
 ```
-set feedforward_transition = 0           # 0 = full FF everywhere
-set feedforward_averaging = AVG_2        # Smoothing of FF signal
-set feedforward_smooth_factor = 25       # 0-75, higher = smoother but laggier
-set feedforward_jitter_factor = 7        # Suppress jitter from RC noise
-set feedforward_boost = 15               # Extra kick on stick acceleration
+set feedforward_transition = 0       # 0 = full FF everywhere (general/racing)
+                                     # 0.9–1 for freestyle (smooth center, full FF at edge)
+set feedforward_averaging = AVG_2    # 2_POINT smoothing of FF signal
+set feedforward_smooth_factor = 25   # Starting point; see RC smoothing section for link-specific values
+set feedforward_jitter_factor = 7    # Suppress noise from RC link (default)
+set feedforward_boost = 15           # Extra kick on stick acceleration
 ```
 
-If craft feels laggy with stock PIDs, bump `f_pitch`/`f_roll` by 20 each. FF has near-zero cost — it doesn't cause oscillation like P does.
+For freestyle: set `f_roll`, `f_pitch`, `f_yaw` to 90–100. For general use, bump from stock +20 if response feels laggy.
+
+⚠️ `feedforward_jitter_factor` and `feedforward_smooth_factor` serve overlapping purposes — do not use both at high values simultaneously.
+
+## RC smoothing
+
+Reduces step noise from the RC link. The correct value depends on link frequency.
+
+```
+set rc_smoothing = 20                  # Freestyle default; 60–120 for cinematic/gimbal work
+
+# For 250 Hz links (e.g. FrSky, older CRSF):
+set feedforward_smooth_factor = 40
+
+# For 500 Hz links (ELRS 500Hz, faster CRSF):
+set feedforward_smooth_factor = 65
+
+# For cinematic / HD stabilizer:
+set rc_smoothing_setpoint_cutoff = 10
+set rc_smoothing_feedforward_cutoff = 10
+```
+
+## Freestyle baseline (5")
+
+Starting point for a 5" freestyle build with RPM filter and bidirectional DSHOT:
+
+```
+# Sag
+set vbat_sag_lpf_period = 200
+set vbat_sag_compensation = 60
+
+# PIDs
+set p_roll = 65
+set i_roll = 95
+set d_roll = 45
+set d_max_roll = 45        # Equal to d_roll = dynamic D disabled
+set p_pitch = 65
+set i_pitch = 95
+set d_pitch = 45
+set d_max_pitch = 45
+set p_yaw = 35
+set i_yaw = 95
+set d_yaw = 0
+
+# FF
+set feedforward_roll = 95
+set feedforward_pitch = 95
+set feedforward_yaw = 95
+set feedforward_transition = 95  # 0.9–1 as integer in firmware
+
+# TPA
+set tpa_rate = 45
+set tpa_breakpoint = 1650
+
+# Anti-gravity
+set anti_gravity_gain = 4
+
+# Iterm relax
+set iterm_relax = RPY
+set iterm_relax_type = SETPOINT
+set iterm_relax_cutoff = 15
+
+# Dynamic idle
+set dynamic_idle_min_rpm = 35
+set transient_throttle_limit = 0
+
+# RC smoothing
+set rc_smoothing = 20
+```
+
+These are starting points, not final values. Always fly with stock PIDs first and verify the build is mechanically sound.
 
 ## Symptom map
 
@@ -102,10 +272,13 @@ If craft feels laggy with stock PIDs, bump `f_pitch`/`f_roll` by 20 each. FF has
 | High-frequency shake on hard cornering | P too high → lower P 5 |
 | Slow, soft, mushy | P too low or FF too low → raise FF first |
 | Hot motors, especially after a flight | D too high or filters too open → tighten D-term filter, lower D 5 |
-| Bounce-back when stopping a flip | I too high → lower I 10 |
+| Bounce-back when stopping a flip | I too high or `iterm_relax_cutoff` too high → lower relax cutoff first |
 | Propwash on descent | D too low, or filters too tight → raise D 5, open D-term filter |
 | Twitchy on stick inputs | FF too high → lower F 20 |
 | Drift in wind | I too low → raise I 10 |
 | Yaw spin-out on punchout | yaw I too low → raise i_yaw 20 |
-| Jello in video, FPV looks clean | Soft camera mount or pitched-too-far gyro — not a tune issue |
-| Jello in FPV AND camera | Real vibration → mechanical issue, balance props, check motor bell tightness |
+| Attitude shift during throttle punch | Anti-gravity too low → raise anti_gravity_gain |
+| Oscillations only at high throttle | TPA not set → add tpa_rate 0.40–0.50 |
+| Desyncs at low throttle | Dynamic idle not configured → enable bidirDSHOT + dynamic_idle_min_rpm |
+| Jello in video, FPV looks clean | Soft camera mount — not a tune issue |
+| Jello in FPV AND camera | Real vibration → mechanical issue, balance props, check motor bell |

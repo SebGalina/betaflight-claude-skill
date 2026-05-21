@@ -111,7 +111,7 @@ Do not ask the user to pick a style — show both. Note that exact numeric conve
 
 ## Version awareness
 
-Default to **Betaflight 4.5.x** conventions unless the user specifies otherwise. If the user mentions 4.6 (current dev/release branch), check `references/version-changes.md` for the differences. If the user is on 4.4 or older, suggest upgrading after the diagnostic, not before — old tunes don't translate cleanly across major versions.
+Default to **Betaflight 2025.12** conventions unless the user specifies otherwise. Check `references/version-changes.md` for differences with 4.5.x and 4.4.x. If the user is on 4.4 or older, suggest upgrading after the diagnostic, not before — old tunes don't translate cleanly across major versions.
 
 ## Working with Claude in Chrome on app.betaflight.com
 
@@ -126,7 +126,7 @@ The PWA requires a Chromium-based browser. Firefox and Safari do not support Web
 
 ### What Claude in Chrome can do on the PWA
 
-- Navigate to `app.betaflight.com` and click through any tab (CLI, PID Tuning, Configuration, Modes, Motors, Ports, Failsafe, Receiver, OSD)
+- Navigate to `app.betaflight.com` and click through any tab (CLI, PID Tuning, Configuration, Modes, Motors, Ports, Failsafe, Receiver, OSD) — use `references/configuration.md` to know which tab does what and its documentation URL
 - Read values displayed in the DOM
 - Type commands in the CLI tab (`set xxx = yyy`, `diff all`, `save`)
 - Capture the CLI output and analyse it with this skill
@@ -177,6 +177,7 @@ The Python scripts are meant to be **executed** whenever a code-execution enviro
 - `references/parameters.md` — Most common `set` parameters with safe ranges
 - `references/pid-tuning.md` — PID, filter, and rates tuning guide
 - `references/troubleshooting.md` — Symptom-to-cause map
+- `references/configuration.md` — Configurator tab navigation: what each tab does, all documentation URLs
 - `references/version-changes.md` — Migration notes between major versions
 - `scripts/parse_diff.py` — Parser for CLI diff/dump output
 - `scripts/analyze_blackbox.py` — Blackbox log analyzer: parses all headers, decodes the full frame stream on demand, per-field stats and CSV export (CLI entry point)
