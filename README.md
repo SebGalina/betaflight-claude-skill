@@ -1,129 +1,147 @@
-# betaflight-skill
+# betaflight-claude-skill
 
-> **Claude skill for Betaflight: FPV drone configuration, PID tuning, log analysis, and troubleshooting.**
+> **A Claude skill for Betaflight: FPV drone configuration, PID tuning, blackbox log analysis, and troubleshooting.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 [![Betaflight](https://img.shields.io/badge/Betaflight-4.5.x-orange.svg)](https://betaflight.com/)
 [![Claude Skill](https://img.shields.io/badge/Claude-Agent_Skill-purple.svg)](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
-Un skill [Claude](https://claude.ai) qui aide à configurer, tuner, analyser et dépanner les drones FPV sous firmware Betaflight.
+A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies.
 
-## ✨ Ce que fait le skill
+## ✨ What it does
 
-Une fois chargé, ce skill permet à Claude de :
+Once loaded, the skill lets Claude:
 
-- 🔧 **Diagnostiquer les problèmes de vol** à partir de descriptions en langage naturel (wobbles, moteurs chauds, oscillations, drift, propwash)
-- 📄 **Parser et analyser les fichiers CLI diff/dump** partagés par l'utilisateur
-- ⚡ **Générer des configurations CLI prêtes à coller** pour les classes de builds courantes (5" freestyle, 3" cinewhoop, 7" longrange)
-- 🔄 **Migrer les configurations** entre versions majeures de Betaflight (4.4 → 4.5 → 4.6)
-- ⚠️ **Repérer les paramètres dépréciés** qui causeraient des erreurs à l'import sur un firmware plus récent
-- 📏 **Recommander des plages de valeurs sûres** pour PIDs, filtres, rates et paramètres ESC
+- 🔧 **Diagnose flight issues** from natural-language descriptions (wobbles, hot motors, oscillations, drift, propwash, jello)
+- 📄 **Parse and analyze CLI diff/dump files** you share
+- 📊 **Decode blackbox logs** — full binary frame decode with per-field statistics and CSV export (see below)
+- ⚡ **Generate paste-ready CLI configs** for common build classes (5" freestyle, 3" cinewhoop, 7" longrange)
+- 🔄 **Migrate configurations** across major Betaflight versions (4.4 → 4.5 → 4.6)
+- ⚠️ **Flag deprecated parameters** that would error on import to newer firmware
+- 📏 **Recommend safe value ranges** for PIDs, filters, rates, and ESC settings
 
-**Firmware cible** : Betaflight 4.5.x (différences pour 4.4 et 4.6 documentées dans les références).
+**Default tuning target:** Betaflight 4.5.x (4.4 and 4.6 differences are documented in the references). The blackbox decoder itself is version-agnostic.
 
 ## 🚀 Installation
-
-### claude.ai (web / mobile / desktop)
-
-1. Télécharger l'archive `.skill` depuis la dernière [release](../../releases) (ou zipper le dossier `betaflight/`)
-2. Dans Claude : **Settings → Capabilities → Skills → "+ Create skill"**
-3. Uploader le fichier
-4. Le skill se déclenche automatiquement quand il est pertinent
 
 ### Claude Code
 
 ```bash
-# Installation personnelle
-cp -r betaflight ~/.claude/skills/
+# Per-user (all projects)
+git clone https://github.com/SebGalina/betaflight-claude-skill.git ~/.claude/skills/betaflight
 
-# Ou par projet
-cp -r betaflight .claude/skills/
+# Or per-project
+git clone https://github.com/SebGalina/betaflight-claude-skill.git .claude/skills/betaflight
 ```
+
+`SKILL.md` lives at the repository root, so the cloned folder *is* the skill. Claude triggers it automatically when a request looks Betaflight-related.
+
+### claude.ai (web / mobile / desktop)
+
+1. Download `betaflight-claude-skill-v*.zip` from the latest [release](../../releases).
+2. In Claude: **Settings → Capabilities → Skills → "+ Create skill"** and upload the zip.
+3. The skill triggers automatically when relevant.
 
 ### Claude API
 
-Upload via la Skills API — voir la [documentation officielle](https://platform.claude.com/docs/en/build-with-claude/skills-guide).
+Upload via the Skills API — see the [official guide](https://platform.claude.com/docs/en/build-with-claude/skills-guide).
 
-## 📦 Structure
+## 📊 Blackbox log analysis
+
+`scripts/analyze_blackbox.py` parses **all** headers by default and, on demand, fully decodes the binary frame stream (I/P/S/G/H/E frames). The decoder (`scripts/blackbox_decoder.py`) is a faithful pure-Python port of the official [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — every field encoding and predictor.
+
+```bash
+python scripts/analyze_blackbox.py log.bbl              # headers + build summary (fast, stdlib only)
+python scripts/analyze_blackbox.py log.bbl --stats      # decode frames + per-field min/max/mean/std
+python scripts/analyze_blackbox.py log.bbl --csv out.csv  # decoded main frames to CSV ('-' for stdout)
+python scripts/analyze_blackbox.py log.bbl --json       # full structured output
+python scripts/analyze_blackbox.py log.bbl --session N  # pick one of several concatenated logs
+```
+
+The `--stats` and `--csv` modes require `numpy` and `pandas`; header parsing and `--json` work with the standard library alone.
+
+This is a **time-domain** analyzer (real decoded values, statistics, export). For FFT / noise spectra, use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
+
+## 📦 Repository structure
 
 ```
-betaflight/
-├── SKILL.md                  Définition principale + description de déclenchement
-├── references/               Docs chargées à la demande
-│   ├── cli-commands.md       Syntaxe CLI Betaflight
-│   ├── parameters.md         Paramètres `set` avec plages sûres
-│   ├── pid-tuning.md         Guide PID, filtres et rates
-│   ├── troubleshooting.md    Diagnostic par symptôme
-│   └── version-changes.md    Notes de migration entre versions
-├── scripts/                  Outils Python
-│   ├── parse_diff.py         Parser pour CLI diff/dump
-│   ├── validate_config.py    Validation de cohérence
-│   └── analyze_blackbox.py   Analyse header-level de logs blackbox
+.
+├── SKILL.md                  Skill definition + triggering description
+├── references/               Docs loaded on demand
+│   ├── cli-commands.md       Betaflight CLI command reference
+│   ├── parameters.md         `set` parameters with safe ranges
+│   ├── pid-tuning.md         PID, filter, and rates tuning guide
+│   ├── troubleshooting.md    Symptom-to-cause map
+│   └── version-changes.md    Migration notes between versions
+├── scripts/                  Python tools
+│   ├── parse_diff.py         Parser for CLI diff/dump output
+│   ├── validate_config.py    Config sanity checker
+│   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)
+│   └── blackbox_decoder.py   Pure-Python blackbox frame decoder
 ├── assets/
-│   └── presets/              Configs CLI de départ
+│   └── presets/              Starter CLI configs
 │       ├── 5inch-freestyle.txt
 │       ├── cinewhoop-3inch.txt
 │       └── longrange-7inch.txt
-└── evals/                    Cas de test
+└── evals/                    Test cases
     ├── evals.json
     └── sample_diff.txt
 ```
 
-## 💬 Exemples d'utilisation
+## 💬 Usage examples
 
-Une fois le skill installé, vous pouvez simplement écrire à Claude :
+Once installed, just talk to Claude — no explicit invocation needed:
 
-> « Mon drone 5 pouces wobble en yaw depuis que j'ai changé d'hélices, que faire ? »
+> "My 5-inch quad started wobbling on yaw after I changed props, what should I do?"
 
-> « Génère-moi une config CLI de base pour un 5\" freestyle avec moteurs 2207 1750KV en 6S, FC F7, ELRS sur UART2 »
+> "Generate a baseline CLI config for a 5\" freestyle build, 2207 1750KV motors on 6S, F7 FC, ELRS on UART2."
 
-> « Voici mon diff Betaflight, regarde si tout est cohérent » *(en attachant le fichier)*
+> "Here's my Betaflight diff, check that it's all consistent." *(attach the file)*
 
-> « Je passe de Betaflight 4.4 à 4.5, quels paramètres je dois revoir ? »
+> "I'm moving from Betaflight 4.4 to 4.5 — which parameters should I review?"
 
-Le skill se déclenche automatiquement — pas besoin de l'invoquer explicitement.
+> "Analyze this blackbox log and tell me if the motors are running hot." *(attach the .bbl)*
 
-## 🧪 Tests
-
-Pour tester les scripts :
+## 🧪 Running the scripts
 
 ```bash
 python scripts/parse_diff.py evals/sample_diff.txt
 python scripts/validate_config.py evals/sample_diff.txt
+python scripts/analyze_blackbox.py your_log.bbl --stats
 ```
 
-Les cas de test du skill sont dans `evals/evals.json`.
+The skill's test cases live in `evals/evals.json`.
 
-## ⚠️ Limites
+## ⚠️ Limitations
 
-- **L'analyse blackbox est superficielle.** Pour une vraie analyse FFT/PID, utilisez [blackbox.betaflight.com](https://blackbox.betaflight.com) ou PIDtoolbox.
-- **Cible Betaflight 4.5.x par défaut.** Les configurations 4.4 peuvent contenir des paramètres dépréciés ; le skill les signale mais ne migre pas automatiquement.
-- **Pas de communication temps réel avec le FC.** Ce skill travaille sur des fichiers et des descriptions — il ne dialogue pas avec un FC connecté en USB.
+- **No FFT / noise spectra.** The blackbox analyzer decodes real values and computes time-domain statistics; for frequency analysis use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
+- **Defaults to Betaflight 4.5.x conventions.** 4.4 configs may contain deprecated parameters; the skill flags them but does not auto-migrate.
+- **No real-time link to the flight controller.** The skill works on files and descriptions — it does not talk to a USB-connected FC. (Claude in Chrome can drive the `app.betaflight.com` PWA; see `SKILL.md`.)
 
-## 🛡️ Sécurité
+## 🛡️ Safety
 
-Ce skill suit des règles strictes :
+The skill follows strict rules:
 
-- Ne recommande **jamais** de désactiver les failsafes ou les contrôles d'armement
-- **Avertit toujours** avant des changements de direction / mapping moteur (test props-off)
-- **Signale** les valeurs suspectes plutôt que de les appliquer silencieusement
-- **Rappelle** que les nouveaux tunes doivent être testés dans une zone sûre
+- **Never** recommends disabling failsafes or arming checks
+- **Always warns** before motor-direction / mapping changes (props-off testing)
+- **Flags** suspicious values instead of applying them silently
+- **Reminds** that new tunes must be tested in a safe area
 
-## 🤝 Contribuer
+## 🤝 Contributing
 
-Voir [CONTRIBUTING.md](CONTRIBUTING.md). Issues et PRs bienvenues, en français comme en anglais.
+See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome.
 
-## 📜 Licence
+## 📜 License
 
-Apache 2.0 — voir [LICENSE.txt](LICENSE.txt).
+Apache 2.0 — see [LICENSE.txt](LICENSE.txt).
 
-## 🔗 Liens utiles
+## 🔗 Links
 
-- [Betaflight](https://betaflight.com/) — projet officiel
-- [Documentation Betaflight](https://betaflight.com/docs)
-- [Claude Agent Skills (spec)](https://agentskills.io/)
-- [Documentation Claude Skills](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
+- [Betaflight](https://betaflight.com/) — official project
+- [Betaflight documentation](https://betaflight.com/docs)
+- [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — the decoder this skill ports
+- [Claude Skills documentation](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
-## ⚖️ Avertissement
+## ⚖️ Disclaimer
 
-Projet communautaire non affilié au projet Betaflight ni à aucun fabricant de FC. Betaflight est une marque de ses détenteurs respectifs. Ce skill s'appuie sur des conventions Betaflight publiquement documentées.
+Community project, not affiliated with the Betaflight project or any FC manufacturer. Betaflight is a trademark of its respective owners. This skill relies on publicly documented Betaflight conventions.
