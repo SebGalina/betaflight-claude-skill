@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-step_response.py — Betaflight closed-loop step response analyser.
+step_response.py -Betaflight closed-loop step response analyser.
 
 Estimates the step response of the PID loop (setpoint → gyro) per axis using
-Welch's averaged cross-spectral density method — the same signal-processing
+Welch's averaged cross-spectral density method -the same signal-processing
 approach used by PIDToolbox:
 
     H(f)  = Pxy(f) / Pxx(f)          # transfer function estimate
@@ -96,10 +96,10 @@ def _welch_step_response(
     Estimate step response from arbitrary input/output signals.
 
     Returns:
-        times_ms  — time axis for the step response, in milliseconds
-        step      — normalized step response (1.0 = steady state)
-        freqs     — frequency axis (Hz) for the coherence output
-        coherence — signal coherence per frequency band (quality indicator)
+        times_ms  -time axis for the step response, in milliseconds
+        step      -normalized step response (1.0 = steady state)
+        freqs     -frequency axis (Hz) for the coherence output
+        coherence -signal coherence per frequency band (quality indicator)
     """
     if nperseg is None:
         # ~64 ms window, rounded to nearest power of 2
@@ -152,11 +152,11 @@ def _metrics(times_ms: np.ndarray, step: np.ndarray) -> dict:
 
     result: dict = {}
 
-    # Delay — first crossing of 50 %
+    # Delay -first crossing of 50 %
     idx_50 = int(np.argmax(sn >= 0.5))
     result["delay_ms"] = round(float(times_ms[idx_50]), 1) if idx_50 > 0 else None
 
-    # Rise time — 10 % to 90 %
+    # Rise time -10 % to 90 %
     idx_10 = int(np.argmax(sn >= 0.1))
     idx_90 = int(np.argmax(sn >= 0.9))
     if idx_10 > 0 and idx_90 > idx_10:
@@ -168,7 +168,7 @@ def _metrics(times_ms: np.ndarray, step: np.ndarray) -> dict:
     peak = float(np.max(sn))
     result["overshoot_pct"] = round((peak - 1.0) * 100.0, 1) if peak > 1.0 else 0.0
 
-    # Settling time — last exit from ±2 % band
+    # Settling time -last exit from ±2 % band
     out = np.where(np.abs(sn - 1.0) > 0.02)[0]
     if len(out):
         last = int(out[-1])
@@ -194,31 +194,31 @@ def _diagnose(m: dict) -> list[str]:
 
     if rt is not None:
         if rt < 8:
-            hints.append(f"Rise time very fast ({rt} ms) — risk of P oscillation or FF too high")
+            hints.append(f"Rise time very fast ({rt} ms) - risk of P oscillation or FF too high")
         elif rt < 15:
             hints.append(f"Rise time good ({rt} ms)")
         elif rt < 30:
-            hints.append(f"Rise time acceptable ({rt} ms) — raise FF slightly if response feels sluggish")
+            hints.append(f"Rise time acceptable ({rt} ms) - raise FF slightly if response feels sluggish")
         else:
-            hints.append(f"Slow rise ({rt} ms) — raise FF first, then P")
+            hints.append(f"Slow rise ({rt} ms) - raise FF first, then P")
 
     if os_p > 25:
-        hints.append(f"High overshoot {os_p:.0f} % — lower P or raise D")
+        hints.append(f"High overshoot {os_p:.0f} % - lower P or raise D")
     elif os_p > 12:
-        hints.append(f"Moderate overshoot {os_p:.0f} % — consider raising D slightly")
+        hints.append(f"Moderate overshoot {os_p:.0f} % - consider raising D slightly")
     elif os_p < 2 and (rt or 0) > 25:
-        hints.append("Underdamped — raise P or FF")
+        hints.append("Underdamped -raise P or FF")
     else:
         hints.append(f"Overshoot clean ({os_p:.0f} %)")
 
     if rt is not None and st is not None and (st - rt) > 50:
-        hints.append(f"Long settling ({st} ms) — I too high or iterm_relax_cutoff too high")
+        hints.append(f"Long settling ({st} ms) - I too high or iterm_relax_cutoff too high")
 
     if dl is not None:
         if dl > 15:
-            hints.append(f"High latency ({dl} ms) — filters may be too aggressive")
+            hints.append(f"High latency ({dl} ms) - filters may be too aggressive")
         elif dl < 5:
-            hints.append(f"Low latency ({dl} ms) — filters are light (good)")
+            hints.append(f"Low latency ({dl} ms) - filters are light (good)")
 
     return hints or ["Step response looks clean"]
 
@@ -319,7 +319,7 @@ def main():
                 st  = data.get("settling_time_ms")
                 dl  = data.get("delay_ms")
                 coh = data.get("mean_coherence", 0)
-                print(f"── {axis.upper()} ──────────────────────────────")
+                print(f"-- {axis.upper()} " + "-" * 30)
                 print(f"  Rise time     : {rt} ms"          if rt  else "  Rise time     : n/a")
                 print(f"  Overshoot     : {osp} %")
                 print(f"  Settling time : {st} ms"          if st  else "  Settling time  : n/a")
@@ -327,7 +327,7 @@ def main():
                 print(f"  Coherence     : {coh:.2f}  (> 0.7 = reliable, < 0.5 = noisy data)")
                 print()
                 for hint in data.get("diagnosis", []):
-                    print(f"  → {hint}")
+                    print(f"  > {hint}")
                 print()
     finally:
         if tmp_csv:
