@@ -17,12 +17,19 @@ gives a statistically robust result from the entire flight, not just hand-picked
 Requires: numpy, scipy, pandas
 
 Usage:
-    python step_response.py <log.bbl>                  # text report, all axes
-    python step_response.py <log.bbl> --axis roll      # single axis
-    python step_response.py <log.bbl> --session 2      # multi-session log
-    python step_response.py <decoded.csv>              # from analyze_blackbox --csv
-    python step_response.py <log.bbl> --json           # machine-readable output
-    python step_response.py <log.bbl> --csv curves.csv # export response curves
+    python step_response.py <log.bbl>                       # text report, all axes
+    python step_response.py <log.bbl> --axis roll           # single axis
+    python step_response.py <log.bbl> --session 2           # multi-session log
+    python step_response.py <decoded.csv>                   # from analyze_blackbox --csv
+    python step_response.py <log.bbl> --json                # machine-readable output
+    python step_response.py <log.bbl> --csv curves.csv      # export response curves
+
+Signal quality flags (improve coherence on noisy/freestyle logs):
+    --bandpass              Bandpass 5-80 Hz before Welch (cuts DC drift + high-freq noise)
+    --active-only           Keep only frames with fast stick movement (|dSetpoint/dt| > threshold)
+    --nperseg N             Override Welch window size (default: auto ~64 ms, power of 2)
+
+Recommended for identification flights: --bandpass --active-only
 """
 
 import argparse
@@ -81,6 +88,40 @@ def _active_mask(df: pd.DataFrame, throttle_min: int = 1100) -> np.ndarray:
         return df[THROTTLE_COL].values > throttle_min
     return np.ones(len(df), dtype=bool)
 
+
+def _active_only_mask(df: pd.DataFrame, fs: float, threshold_dps_per_s: float = 5000.0) -> np.ndarray:
+    """
+    Stricter mask: keep only frames around fast stick inputs.
+
+    Computes |dSetpoint/dt| across all axes and keeps frames where the
+    stick is moving fast enough to be informative for system identification.
+    A 20 ms pre/post window is added around each active frame so the
+    step response onset and tail are captured.
+    """
+    pad = int(fs * 0.020)  # 20 ms padding
+    combined = np.zeros(len(df), dtype=bool)
+    for col in SETPOINT_COLS:
+        if col not in df.columns:
+            continue
+        sp = df[col].to_numpy(float)
+        dsp = np.abs(np.gradient(sp, 1.0 / fs))
+        combined |= dsp > threshold_dps_per_s
+
+    # Dilate with pre/post window
+    idx = np.where(combined)[0]
+    for i in idx:
+        lo = max(0, i - pad)
+        hi = min(len(combined), i + pad + 1)
+        combined[lo:hi] = True
+    return combined
+
+
+def _bandpass(sig: np.ndarray, fs: float, lo: float = 5.0, hi: float = 80.0) -> np.ndarray:
+    """Apply a 4th-order Butterworth bandpass filter (lo–hi Hz)."""
+    nyq = fs / 2.0
+    sos = sp_signal.butter(4, [lo / nyq, hi / nyq], btype="band", output="sos")
+    return sp_signal.sosfiltfilt(sos, sig)
+
 # ---------------------------------------------------------------------------
 # Step response via Welch's cross-spectral method
 # ---------------------------------------------------------------------------
@@ -91,6 +132,7 @@ def _welch_step_response(
     fs: float,
     nperseg: int | None = None,
     regularize: float = 1e-5,
+    bandpass: bool = False,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Estimate step response from arbitrary input/output signals.
@@ -106,9 +148,12 @@ def _welch_step_response(
         nperseg = int(2 ** round(np.log2(fs * 0.064)))
         nperseg = max(256, min(nperseg, 4096))
 
-    # Detrend
+    # Detrend then optionally bandpass
     sp = sp_signal.detrend(setpoint.astype(float))
     gy = sp_signal.detrend(gyro.astype(float))
+    if bandpass:
+        sp = _bandpass(sp, fs)
+        gy = _bandpass(gy, fs)
 
     # Welch's cross-PSD and auto-PSD
     f, Pxx = sp_signal.welch(sp, fs=fs, nperseg=nperseg, window="hann")
@@ -227,8 +272,18 @@ def _diagnose(m: dict) -> list[str]:
 # Main analysis
 # ---------------------------------------------------------------------------
 
-def analyse(df: pd.DataFrame, fs: float, axes_filter=None) -> dict:
-    mask = _active_mask(df)
+def analyse(
+    df: pd.DataFrame,
+    fs: float,
+    axes_filter=None,
+    bandpass: bool = False,
+    active_only: bool = False,
+    nperseg: int | None = None,
+) -> dict:
+    if active_only:
+        mask = _active_only_mask(df, fs)
+    else:
+        mask = _active_mask(df)
     results: dict = {}
 
     for i, axis in enumerate(AXES):
@@ -244,7 +299,9 @@ def analyse(df: pd.DataFrame, fs: float, axes_filter=None) -> dict:
         if len(sp) < 512:
             continue
 
-        times_ms, step, freqs, coh = _welch_step_response(sp, gy, fs)
+        times_ms, step, freqs, coh = _welch_step_response(
+            sp, gy, fs, nperseg=nperseg, bandpass=bandpass
+        )
         m = _metrics(times_ms, step)
 
         # Mean coherence in the PID-relevant band (5–80 Hz)
@@ -280,6 +337,13 @@ def main():
                     help="Session index for multi-session logs")
     ap.add_argument("--json", action="store_true", help="Output as JSON")
     ap.add_argument("--csv", metavar="OUT", help="Write step response curves to CSV")
+    # Signal quality flags
+    ap.add_argument("--bandpass", action="store_true",
+                    help="Bandpass 5-80 Hz before Welch (cuts DC drift and high-freq noise)")
+    ap.add_argument("--active-only", action="store_true",
+                    help="Keep only frames around fast stick inputs (improves coherence on noisy logs)")
+    ap.add_argument("--nperseg", type=int, default=None, metavar="N",
+                    help="Welch window size in samples (default: auto ~64 ms, power of 2)")
     args = ap.parse_args()
 
     path = Path(args.input)
@@ -293,9 +357,22 @@ def main():
     try:
         fs = _sample_rate(df)
         axes_filter = [args.axis] if args.axis else None
-        results = analyse(df, fs, axes_filter)
+        results = analyse(
+            df, fs, axes_filter,
+            bandpass=args.bandpass,
+            active_only=args.active_only,
+            nperseg=args.nperseg,
+        )
 
-        output = {"sample_rate_hz": round(fs), "axes": results}
+        flags = []
+        if args.bandpass:    flags.append("bandpass")
+        if args.active_only: flags.append("active-only")
+        if args.nperseg:     flags.append(f"nperseg={args.nperseg}")
+        output = {
+            "sample_rate_hz": round(fs),
+            "flags": flags,
+            "axes": results,
+        }
 
         if args.json:
             print(json.dumps(output, indent=2))
@@ -310,8 +387,13 @@ def main():
                 print(f"Curves written to {args.csv}", file=sys.stderr)
         else:
             # Human-readable report
-            print(f"Sample rate : {round(fs):,} Hz")
-            print(f"Active frames : {int((_active_mask(df)).sum()):,} / {len(df):,}")
+            base_mask = _active_mask(df)
+            used_mask = _active_only_mask(df, fs) if args.active_only else base_mask
+            print(f"Sample rate   : {round(fs):,} Hz")
+            print(f"Active frames : {int(used_mask.sum()):,} / {len(df):,}", end="")
+            if flags:
+                print(f"  [{', '.join(flags)}]", end="")
+            print()
             print()
             for axis, data in results.items():
                 rt  = data.get("rise_time_ms")
