@@ -19,9 +19,11 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
 
 ## Core workflow
 
+> **Script execution rule**: when the user shares a file, **always execute the relevant script** — never analyse the file manually or answer from memory alone. If the code-execution tool is unavailable, tell the user to enable it (Claude Desktop: conversation settings → Analysis tool) before proceeding.
+
 1. **Identify the artifact type** the user is providing:
-   - **CLI diff/dump** (text file or pasted block) → parse with `scripts/parse_diff.py`
-   - **Blackbox log** (`.bbl`/`.bfl`) → analyse with `scripts/analyze_blackbox.py` (full frame decode on demand)
+   - **CLI diff/dump** (text file or pasted block) → **execute** `scripts/parse_diff.py` on it
+   - **Blackbox log** (`.bbl`/`.bfl`) → **execute** `scripts/analyze_blackbox.py` on it (full frame decode on demand)
    - **Description of flight behavior** with no file → diagnostic interview
    - **No artifact, generic question** → answer from `references/`
 
