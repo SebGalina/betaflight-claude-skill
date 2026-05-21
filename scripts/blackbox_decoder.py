@@ -23,6 +23,7 @@ reused anywhere. The analysis layer adds numpy/pandas for stats and CSV.
 
 from __future__ import annotations
 
+import math
 import re
 import struct
 from typing import Callable, Optional
@@ -370,6 +371,75 @@ def _hex_to_float(s: str) -> float:
         return 0.0
 
 
+# Legacy header name -> canonical sys_config key (port of translationValues).
+# Lets the parser accept old/new firmware header spellings transparently.
+_TRANSLATION = {
+    "acc_limit_yaw": "yawRateAccelLimit",
+    "accel_limit": "rateAccelLimit",
+    "acc_limit": "rateAccelLimit",
+    "anti_gravity_thresh": "anti_gravity_threshold",
+    "currentSensor": "currentMeter",
+    "d_notch_cut": "dterm_notch_cutoff",
+    "d_setpoint_weight": "dtermSetpointWeight",
+    "dterm_lowpass_hz": "dterm_lpf_hz",
+    "dterm_lowpass_dyn_hz": "dterm_lpf_dyn_hz",
+    "dterm_lowpass2_hz": "dterm_lpf2_hz",
+    "dterm_lpf1_type": "dterm_filter_type",
+    "dterm_lpf1_static_hz": "dterm_lpf_hz",
+    "dterm_lpf1_dyn_hz": "dterm_lpf_dyn_hz",
+    "dterm_lpf1_dyn_expo": "dterm_lpf_dyn_expo",
+    "dterm_lpf2_type": "dterm_filter2_type",
+    "dterm_lpf2_static_hz": "dterm_lpf2_hz",
+    "dterm_setpoint_weight": "dtermSetpointWeight",
+    "digital_idle_value": "digitalIdleOffset",
+    "dshot_idle_value": "digitalIdleOffset",
+    "dyn_idle_min_rpm": "dynamic_idle_min_rpm",
+    "feedforward_transition": "ff_transition",
+    "feedforward_averaging": "ff_averaging",
+    "feedforward_smooth_factor": "ff_smooth_factor",
+    "feedforward_jitter_factor": "ff_jitter_factor",
+    "feedforward_boost": "ff_boost",
+    "feedforward_max_rate_limit": "ff_max_rate_limit",
+    "feedforward_weight": "dtermSetpointWeight",
+    "gyro_hardware_lpf": "gyro_lpf",
+    "gyro_lowpass": "gyro_lowpass_hz",
+    "gyro_lowpass_type": "gyro_soft_type",
+    "gyro_lowpass2_type": "gyro_soft2_type",
+    "gyro_lpf1_type": "gyro_soft_type",
+    "gyro_lpf1_static_hz": "gyro_lowpass_hz",
+    "gyro_lpf1_dyn_hz": "gyro_lowpass_dyn_hz",
+    "gyro_lpf1_dyn_expo": "gyro_lowpass_dyn_expo",
+    "gyro_lpf2_type": "gyro_soft2_type",
+    "gyro_lpf2_static_hz": "gyro_lowpass2_hz",
+    "gyro.scale": "gyro_scale",
+    "iterm_windup": "itermWindupPointPercent",
+    "motor_pwm_protocol": "fast_pwm_protocol",
+    "pid_at_min_throttle": "pidAtMinThrottle",
+    "pidsum_limit": "pidSumLimit",
+    "pidsum_limit_yaw": "pidSumLimitYaw",
+    "rc_expo_yaw": "rcYawExpo",
+    "rc_interp": "rc_interpolation",
+    "rc_interp_int": "rc_interpolation_interval",
+    "rc_rate": "rc_rates",
+    "rc_rate_yaw": "rcYawRate",
+    "rc_yaw_expo": "rcYawExpo",
+    "rcExpo": "rc_expo",
+    "rcRate": "rc_rates",
+    "rpm_filter_harmonics": "gyro_rpm_notch_harmonics",
+    "rpm_filter_q": "gyro_rpm_notch_q",
+    "rpm_filter_min_hz": "gyro_rpm_notch_min",
+    "rpm_filter_lpf_hz": "rpm_notch_lpf",
+    "thr_expo": "thrExpo",
+    "thr_mid": "thrMid",
+    "dynThrPID": "tpa_rate",
+    "use_unsynced_pwm": "unsynced_fast_pwm",
+    "vbat_scale": "vbatscale",
+    "vbat_pid_gain": "vbat_pid_compensation",
+    "yaw_accel_limit": "yawRateAccelLimit",
+    "yaw_lowpass_hz": "yaw_lpf_hz",
+}
+
+
 def split_sessions(raw: bytes) -> list[tuple[int, int]]:
     """Return (start, end) byte ranges, one per concatenated log section."""
     starts = []
@@ -404,6 +474,15 @@ class FlightLogParser:
             "minthrottle": 1150,
             "maxthrottle": 1850,
             "vbatref": 4095,
+            "vbatscale": 110,
+            "vbatmincellvoltage": 330,
+            "vbatwarningcellvoltage": 350,
+            "vbatmaxcellvoltage": 430,
+            "currentMeterOffset": 0,
+            "currentMeterScale": 400,
+            "gyroScale": 1.0,
+            "acc_1G": 2048,
+            "motor_poles": 14,
             "motorOutput": [1150, 1850],
             "firmwareType": None,
             "firmwareVersion": None,
@@ -513,8 +592,25 @@ class FlightLogParser:
             vals = _parse_int_list(value)
             if len(vals) >= 2:
                 self.sys_config["motorOutput"] = [vals[0], vals[1]]
-        elif name in ("gyro.scale", "gyro_scale"):
-            self.sys_config["gyroScale"] = _hex_to_float(value)
+        elif name == "gyro_scale":
+            # Match flightlog.js: store the firmware-style scale so that
+            # gyroRawToDegreesPerSecond reproduces degrees/second.
+            scale = _hex_to_float(value)
+            ftype = self.sys_config.get("firmwareType")
+            if ftype in ("betaflight", "raceflight", "butterflight", "cleanflight", "inav"):
+                scale *= (math.pi / 180) * 0.000001
+            self.sys_config["gyroScale"] = scale
+        elif name == "vbatcellvoltage":
+            vals = _parse_int_list(value)
+            if len(vals) >= 3:
+                self.sys_config["vbatmincellvoltage"] = vals[0]
+                self.sys_config["vbatwarningcellvoltage"] = vals[1]
+                self.sys_config["vbatmaxcellvoltage"] = vals[2]
+        elif name == "currentMeter":
+            vals = _parse_int_list(value)
+            if len(vals) >= 2:
+                self.sys_config["currentMeterOffset"] = vals[0]
+                self.sys_config["currentMeterScale"] = vals[1]
         else:
             # Generic: keep raw, plus a numeric/csv interpretation when useful.
             if "," in value:
@@ -559,6 +655,7 @@ class FlightLogParser:
         line_end = stream.pos
         field_name = stream.data[line_start:separator].decode("latin-1")
         field_value = stream.data[separator + 1:line_end].decode("latin-1")
+        field_name = _TRANSLATION.get(field_name, field_name)
 
         if not self._parse_field_definition(field_name, field_value):
             # Not a "Field X ..." line -> a config header

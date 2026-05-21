@@ -22,6 +22,13 @@ First public release.
 - `blackbox_decoder.py` — pure-Python blackbox decoder, a faithful port of the
   official blackbox-log-viewer (encodings + predictors); used by
   `analyze_blackbox.py`
+- `blackbox_presenter.py` — human-readable presentation layer: scales raw values
+  to physical units (gyro °/s, motor %, vbat V, amperage A, eRPM rpm, PID %),
+  decodes enum headers (e.g. `rates_type → ACTUAL`, `fast_pwm_protocol →
+  DSHOT600`) with version-aware tables, and computes rates as max rotation rate
+  (°/s) per axis via a port of the Configurator rate curve. `analyze_blackbox.py`
+  `--stats`/`--json` and `parse_diff.py` now emit human-readable values and a
+  `rates` block; raw CSV export is unchanged
 - Reference docs:
   - `cli-commands.md` — CLI command reference
   - `parameters.md` — `set` parameter ranges

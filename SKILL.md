@@ -68,7 +68,11 @@ When a user shares a CLI diff, run `scripts/parse_diff.py` on it to get structur
 2. **Flag anomalies** — unusual values, deprecated parameters, common misconfigurations
 3. **Suggest improvements** — only changes that have a clear rationale
 
+`parse_diff.py` also emits a `rates` block with the computed **max rotation rate (°/s)** per axis for each rate profile. Use it when the user asks about rates (see "Presenting rates and human-readable values" below).
+
 ### Analyzing a blackbox log
+
+A `.bbl`/`.bfl` log is a **binary file** — you cannot read it as text. Always **run `scripts/analyze_blackbox.py`** to decode it; never try to interpret the raw bytes directly or answer from the filename alone.
 
 `scripts/analyze_blackbox.py` parses **all** log headers by default and can fully decode the binary frame stream on demand (a pure-Python port of the official blackbox-log-viewer decoder). It needs `numpy` + `pandas` for the `--stats` and `--csv` modes.
 
@@ -86,6 +90,17 @@ Workflow when a user shares a log:
 2. **Decode with `--stats`** if you need actual flight data — gyro/motor/eRPM ranges, accelerometer (Z ≈ acc_1G at hover), throttle/setpoint behaviour, and corrupt-frame counts.
 3. **Export with `--csv`** when the user wants the raw decoded series for a spreadsheet or external tool.
 4. This is a **time-domain** analyzer — it does not do FFT/noise spectra. For that, still point users to https://blackbox.betaflight.com or PIDtoolbox.
+
+### Presenting rates and human-readable values
+
+Both `analyze_blackbox.py` (`--stats`, `--json`) and `parse_diff.py` already decode raw values into human-readable form — degrees/second, volts, amps, throttle %, rpm, and enum names (e.g. `rates_type 3 → ACTUAL`, `fast_pwm_protocol 7 → DSHOT600`). **Prefer these presented values over raw integers** when answering the user. CSV export stays raw on purpose (for external tools like PIDtoolbox).
+
+When the user asks about **rates**, always present *both* views, because they are the two ways pilots think about rates:
+
+1. The **tune knobs** in the profile's native style (`rates_type`), e.g. ACTUAL → center RC rate, max rate, expo; BETAFLIGHT → RC rate, super rate, expo.
+2. The **resulting curve in °/s** — the style-neutral truth that lets any pilot compare: max rotation rate per axis at full stick, plus center sensitivity. This is what the `rates` block reports as `max_dps` / `center_sensitivity_dps`.
+
+Do not ask the user to pick a style — show both. Note that exact numeric conversion *between* rate systems (e.g. Betaflight ↔ Actual knob values) is only approximate; the °/s curve is the unambiguous common ground, so anchor comparisons there. `max_dps` is computed precisely for ACTUAL and BETAFLIGHT; for KISS/QUICK/RACEFLIGHT it is best-effort.
 
 ## Safety rules
 
@@ -145,15 +160,16 @@ The PWA requires a Chromium-based browser. Firefox and Safari do not support Web
 - When multiple changes are batched, show the full set to the user before applying any of them.
 - If Claude in Chrome encounters an unexpected page state (wrong tab, connection lost, unrecognised UI), stop and ask the user rather than guessing.
 
-### Loading the skill files in claude.ai
+### Running the scripts (Claude Code AND the claude.ai apps)
 
-If you're using claude.ai (not Claude Code), upload the following files at the start of the conversation:
+This skill works in Claude Code and in the claude.ai apps (web / desktop / mobile). Always load the **whole skill, including the `scripts/` folder** (e.g. the release zip) — not just `SKILL.md` — so the tools are present. `blackbox_decoder.py` and `blackbox_presenter.py` are stdlib-only helper modules imported by the other scripts.
 
-1. `SKILL.md` — skill definition and instructions
-2. `references/pid-tuning.md`, `references/troubleshooting.md`, `references/parameters.md` — reference knowledge
-3. `assets/presets/` — starter CLI snippets (optional)
+The Python scripts are meant to be **executed** whenever a code-execution environment is available:
 
-The Python scripts (`parse_diff.py`, `validate_config.py`, `analyze_blackbox.py`, `blackbox_decoder.py`) are for Claude Code sessions only. `analyze_blackbox.py` additionally needs `numpy` + `pandas` for its `--stats` and `--csv` modes (header parsing and `--json` work with the standard library alone).
+- **Claude Code** — scripts run in your local shell with your local Python.
+- **claude.ai apps** — scripts run in the code-execution sandbox. This requires code execution / the analysis tool to be enabled for the conversation. Do not refuse to run them here.
+
+`analyze_blackbox.py` needs `numpy` + `pandas` only for `--stats` and `--csv`; header parsing and `--json` use the standard library alone. If `numpy`/`pandas` are missing in the sandbox, run header or `--json` mode, or `pip install numpy pandas` first.
 
 ## Bundled resources
 
@@ -165,5 +181,6 @@ The Python scripts (`parse_diff.py`, `validate_config.py`, `analyze_blackbox.py`
 - `scripts/parse_diff.py` — Parser for CLI diff/dump output
 - `scripts/analyze_blackbox.py` — Blackbox log analyzer: parses all headers, decodes the full frame stream on demand, per-field stats and CSV export (CLI entry point)
 - `scripts/blackbox_decoder.py` — Pure-Python blackbox decoder (faithful port of the official log-viewer); used by `analyze_blackbox.py`
+- `scripts/blackbox_presenter.py` — Human-readable presentation layer: scales raw values to physical units, decodes enum headers, and computes rates in °/s; used by `analyze_blackbox.py` and `parse_diff.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors
 - `assets/presets/` — Starter CLI snippets per build class (3", 5" freestyle, 7" longrange, cinewhoop)

@@ -32,8 +32,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 import blackbox_decoder as bb  # noqa: E402
+import blackbox_presenter as pr  # noqa: E402
 
 # Header config keys worth surfacing in the human summary (when present).
+# Values prefer the decoded (enum-name) form when available.
 _SUMMARY_KEYS = [
     ("Firmware revision", "Firmware"),
     ("Board information", "Board"),
@@ -42,8 +44,10 @@ _SUMMARY_KEYS = [
     ("looptime", "Looptime (us)"),
     ("gyro_sync_denom", "Gyro sync denom"),
     ("pid_process_denom", "PID process denom"),
-    ("motor_pwm_protocol", "Motor protocol"),
+    ("fast_pwm_protocol", "Motor protocol"),
     ("dshot_bidir", "Bidir DSHOT"),
+    ("rates_type", "Rates type"),
+    ("serialrx_provider", "Serial RX"),
     ("debug_mode", "Debug mode"),
 ]
 
@@ -106,6 +110,8 @@ def _analyze_session(raw, start, end, idx, *, decode, want_stats) -> dict:
         marker: {"count": fd["count"], "fields": fd["name"]}
         for marker, fd in parser.frame_defs.items()
     }
+    info["decoded_settings"] = pr.present_headers(sc)
+    info["rates"] = pr.compute_rates(sc)
     info["warnings"] = _tune_warnings(sc)
 
     if decode or want_stats:
@@ -133,20 +139,43 @@ def _duration_seconds(parser) -> float:
 
 
 def _field_statistics(parser) -> dict:
+    """Per-field min/max/mean/std in human-readable units.
+
+    Stats are computed on raw decoded values, then mapped to physical units
+    via the field presenter. Because every presented field is an affine
+    (scale + offset) transform of the raw value, we derive (scale, offset)
+    from two in-range sample points and apply it to the raw statistics.
+    """
     import numpy as np
 
     if not parser.main_frames:
         return {}
     arr = np.array(parser.main_frames, dtype=np.float64)
+    sc = parser.sys_config
     names = parser.main_field_names
+    n_cells = pr.num_cells_estimate(sc, names)
+    n_motors = pr.num_motors(names)
+    hr = 10 if sc.get("blackbox_high_resolution") else 1
+
     stats = {}
+    x_lo, x_hi = 1000.0, 2000.0
     for i, name in enumerate(names):
         col = arr[:, i]
+        s_lo, unit = pr.present_main_field(sc, name, x_lo, num_cells=n_cells,
+                                           n_motors=n_motors, high_res_scale=hr)
+        s_hi, _ = pr.present_main_field(sc, name, x_hi, num_cells=n_cells,
+                                        n_motors=n_motors, high_res_scale=hr)
+        if isinstance(s_lo, (int, float)) and isinstance(s_hi, (int, float)):
+            scale = (s_hi - s_lo) / (x_hi - x_lo)
+            offset = s_lo - x_lo * scale
+        else:
+            scale, offset, unit = 1.0, 0.0, ""
         stats[name] = {
-            "min": float(np.min(col)),
-            "max": float(np.max(col)),
-            "mean": round(float(np.mean(col)), 4),
-            "std": round(float(np.std(col)), 4),
+            "min": round(float(col.min()) * scale + offset, 3),
+            "max": round(float(col.max()) * scale + offset, 3),
+            "mean": round(float(col.mean()) * scale + offset, 3),
+            "std": round(float(col.std()) * abs(scale), 3),
+            "unit": unit,
         }
     return stats
 
@@ -181,13 +210,17 @@ def _print_human(result: dict) -> None:
             print(f"  ! Header error: {s['error']}")
             continue
         sc = s["sys_config"]
+        decoded = s.get("decoded_settings", {})
         for key, label in _SUMMARY_KEYS:
-            if key in sc and sc[key] not in (None, ""):
-                print(f"  {label + ':':<22}{sc[key]}")
+            value = decoded.get(key, sc.get(key))
+            if value not in (None, ""):
+                print(f"  {label + ':':<22}{value}")
 
         fd = s["frame_defs"]
         fd_summary = ", ".join(f"{m}={d['count']}" for m, d in fd.items())
         print(f"  {'Frame field counts:':<22}{fd_summary}")
+
+        _print_rates(s.get("rates"))
 
         if s.get("decoded"):
             print(f"  {'Duration:':<22}{s['duration_s']} s")
@@ -205,12 +238,12 @@ def _print_human(result: dict) -> None:
                 print(f"  {'Corrupt frames:':<22}{s['corrupt_frames']}")
 
         if s.get("field_stats"):
-            print("\n  Per-field statistics (decoded units):")
-            print(f"    {'field':<22}{'min':>16}{'max':>16}{'mean':>16}{'std':>16}")
+            print("\n  Per-field statistics (human-readable units):")
+            print(f"    {'field':<16}{'min':>13}{'max':>13}{'mean':>13}{'std':>13}  unit")
             for name, st in s["field_stats"].items():
                 print(
-                    f"    {name:<22}{st['min']:>16.2f}{st['max']:>16.2f}"
-                    f"{st['mean']:>16.2f}{st['std']:>16.2f}"
+                    f"    {name:<16}{st['min']:>13.2f}{st['max']:>13.2f}"
+                    f"{st['mean']:>13.2f}{st['std']:>13.2f}  {st.get('unit', '')}"
                 )
 
         if s["warnings"]:
@@ -222,6 +255,24 @@ def _print_human(result: dict) -> None:
         "\nNote: filter/PID red flags above are header-level heuristics. "
         "For FFT / noise analysis use https://blackbox.betaflight.com or PIDtoolbox."
     )
+
+
+def _print_rates(rates: dict) -> None:
+    if not rates or not rates.get("axes"):
+        return
+    rt = rates["rates_type"]
+    print(f"\n  Rates ({rt}):")
+    for axis, e in rates["axes"].items():
+        nat = e["native"]
+        nat_str = ", ".join(f"{k}={v}" for k, v in nat.items() if v is not None)
+        line = f"    {axis:<6} {nat_str}"
+        if e.get("max_dps") is not None:
+            line += f"  ->  max {e['max_dps']} deg/s"
+            if e.get("center_sensitivity_dps") is not None:
+                line += f", center {e['center_sensitivity_dps']} deg/s"
+        else:
+            line += "  (max deg/s not computed for this rates type)"
+        print(line)
 
 
 def _strip_parsers(result: dict) -> dict:

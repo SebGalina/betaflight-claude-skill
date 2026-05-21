@@ -23,7 +23,11 @@ import json
 import re
 import sys
 from collections import defaultdict
+from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).parent))
+import blackbox_presenter as pr  # noqa: E402
 
 # Parameters known to be deprecated in newer versions
 DEPRECATED_PARAMS = {
@@ -176,6 +180,9 @@ def parse(text: str) -> dict[str, Any]:
     result["profiles"] = dict(result["profiles"])
     result["rateprofiles"] = dict(result["rateprofiles"])
 
+    # Human-readable rates (max deg/s) per rate profile
+    result["rates"] = _rates_from_rateprofiles(result["rateprofiles"])
+
     # High-level inferences
     if "DSHOT600" in result["global"].get("motor_pwm_protocol", ""):
         pass  # Could add inference logic here
@@ -185,6 +192,32 @@ def parse(text: str) -> dict[str, Any]:
         )
 
     return result
+
+
+def _rates_from_rateprofiles(rateprofiles: dict) -> dict:
+    """Compute human-readable rates (max deg/s) for each rate profile in a diff."""
+    out = {}
+
+    def _int(d, key):
+        try:
+            return int(d[key])
+        except (KeyError, ValueError, TypeError):
+            return None
+
+    for idx, rp in rateprofiles.items():
+        sc = {
+            "rates_type": rp.get("rates_type", "BETAFLIGHT"),
+            "rc_rates": [_int(rp, f"{a}_rc_rate") for a in ("roll", "pitch", "yaw")],
+            "rates": [_int(rp, f"{a}_srate") for a in ("roll", "pitch", "yaw")],
+            "rc_expo": [_int(rp, f"{a}_expo") for a in ("roll", "pitch", "yaw")],
+            "rate_limits": [
+                _int(rp, f"{a}_rate_limit") or 1998 for a in ("roll", "pitch", "yaw")
+            ],
+        }
+        rates = pr.compute_rates(sc)
+        if rates:
+            out[idx] = rates
+    return out
 
 
 def main() -> int:
