@@ -206,7 +206,7 @@ def _rates_from_rateprofiles(rateprofiles: dict) -> dict:
 
     for idx, rp in rateprofiles.items():
         sc = {
-            "rates_type": rp.get("rates_type", "BETAFLIGHT"),
+            "rates_type": rp.get("rates_type", "ACTUAL"),
             "rc_rates": [_int(rp, f"{a}_rc_rate") for a in ("roll", "pitch", "yaw")],
             "rates": [_int(rp, f"{a}_srate") for a in ("roll", "pitch", "yaw")],
             "rc_expo": [_int(rp, f"{a}_expo") for a in ("roll", "pitch", "yaw")],

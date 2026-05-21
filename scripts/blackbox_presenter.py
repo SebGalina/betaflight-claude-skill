@@ -526,9 +526,9 @@ def compute_rates(sc: dict) -> Optional[dict]:
     elif isinstance(rt_raw, str) and rt_raw.upper() in RATES_TYPE:
         rates_type = rt_raw.upper()
     else:
-        rates_type = "BETAFLIGHT"
+        rates_type = "ACTUAL"
     if not isinstance(rates_type, str):
-        rates_type = "BETAFLIGHT"
+        rates_type = "ACTUAL"
 
     axes = ["roll", "pitch", "yaw"]
     result = {"rates_type": rates_type, "axes": {}}
