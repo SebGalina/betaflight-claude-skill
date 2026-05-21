@@ -124,6 +124,10 @@ Once installed, just talk to Claude — no explicit invocation needed:
 
 > "Analyze this blackbox log and tell me if the motors are running hot." *(attach the .bbl)*
 
+> "Here's my blackbox log from an identification flight — can you run a step response analysis and tell me if my PIDs are well tuned?" *(attach the .bbl)*
+
+> "The step response shows 35% overshoot on roll — what should I change in my PIDs?"
+
 ## 🧪 Running the scripts
 
 ```bash
