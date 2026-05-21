@@ -3,7 +3,7 @@
 > **A Claude skill for Betaflight: FPV drone configuration, PID tuning, blackbox log analysis, and troubleshooting.**
 
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Betaflight](https://img.shields.io/badge/Betaflight-4.5.x-orange.svg)](https://betaflight.com/)
+[![Betaflight](https://img.shields.io/badge/Betaflight-2025.12-orange.svg)](https://betaflight.com/)
 [![Claude Skill](https://img.shields.io/badge/Claude-Agent_Skill-purple.svg)](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
 A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies.
@@ -115,7 +115,7 @@ The skill's test cases live in `evals/evals.json`.
 ## ⚠️ Limitations
 
 - **No FFT / noise spectra.** The blackbox analyzer decodes real values and computes time-domain statistics; for frequency analysis use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
-- **Defaults to Betaflight 4.5.x conventions.** 4.4 configs may contain deprecated parameters; the skill flags them but does not auto-migrate.
+- **Defaults to Betaflight 2025.12 conventions.** 4.5.x and older configs may contain deprecated or renamed parameters; the skill flags them but does not auto-migrate.
 - **No real-time link to the flight controller.** The skill works on files and descriptions — it does not talk to a USB-connected FC. (Claude in Chrome can drive the `app.betaflight.com` PWA; see `SKILL.md`.)
 
 ## 🛡️ Safety
