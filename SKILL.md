@@ -131,6 +131,7 @@ Do not ask the user to pick a style — show both. Note that exact numeric conve
 - **Never recommend** running motors above their rated voltage or removing thermal protections.
 - **Always warn** before recommending changes to motor direction, ESC protocol, or anything that requires props-off testing.
 - **Always remind** the user to test new tunes in a safe area, props-off first when changing motor mapping or direction.
+- **Never suggest a parameter value outside the Safe range documented in `references/parameters.md`** without (a) explicitly flagging it as out-of-range, (b) stating the documented limit, and (c) requiring the user to confirm they want to exceed it. If `references/parameters.md` has no Safe range for a parameter, derive bounds from the official Betaflight source range only — never invent bounds.
 
 ## Version awareness
 

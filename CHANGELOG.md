@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7] — 2026-05-22
+
+### Changed
+- Add safety rule to SKILL.md: never suggest a parameter value outside the Safe range documented in `references/parameters.md` without flagging it, citing the limit, and requiring user confirmation.
+
 ## [0.1.0] — 2026-05-21
 
 First public release.
