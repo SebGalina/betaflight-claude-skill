@@ -22,17 +22,17 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
 > **Script execution rule**: when the user shares a file, **always execute the relevant script** — never analyse the file manually or answer from memory alone. If the code-execution tool is unavailable, tell the user to enable it (Claude Desktop: conversation settings → Analysis tool) before proceeding.
 
 1. **Identify the artifact type** the user is providing:
-   - **CLI diff/dump** (text file or pasted block) → **execute** `scripts/parse_diff.py` on it
-   - **Blackbox log** (`.bbl`/`.bfl`) → **execute** `scripts/analyze_blackbox.py` on it (full frame decode on demand)
+   - **CLI diff/dump** (text file or pasted block) → **execute** `python -m scripts.parse_diff` on it
+   - **Blackbox log** (`.bbl`/`.bfl`) → **execute** `python -m scripts.analyze_blackbox` on it (full frame decode on demand)
    - **Description of flight behavior** with no file → diagnostic interview
    - **No artifact, generic question** → answer from `references/`
 
 2. **Read the relevant reference file** before answering specific questions:
-   - PID/filter/rates questions → `references/pid-tuning.md`
-   - CLI command syntax → `references/cli-commands.md`
-   - Specific `set` parameters → `references/parameters.md`
-   - Flight symptoms → `references/troubleshooting.md`
-   - Version differences → `references/version-changes.md`
+   - PID/filter/rates questions → `references/pid-tuning.md` (fallback: `pid-tuning.md`)
+   - CLI command syntax → `references/cli-commands.md` (fallback: `cli-commands.md`)
+   - Specific `set` parameters → `references/parameters.md` (fallback: `parameters.md`)
+   - Flight symptoms → `references/troubleshooting.md` (fallback: `troubleshooting.md`)
+   - Version differences → `references/version-changes.md` (fallback: `version-changes.md`)
 
 3. **Diagnose, don't guess.** If symptoms are ambiguous, ask one or two targeted questions (frame size, motor KV, prop, battery, firmware version) before recommending changes.
 
@@ -64,7 +64,7 @@ When the user describes a flight issue without sharing a file, follow this struc
 
 ### Analyzing a shared diff
 
-When a user shares a CLI diff, run `scripts/parse_diff.py` on it to get structured output, then:
+When a user shares a CLI diff, run `python -m scripts.parse_diff` on it to get structured output, then:
 
 1. **Summarize the build** — frame size hint, RX protocol, ESC protocol, motor count, firmware version
 2. **Flag anomalies** — unusual values, deprecated parameters, common misconfigurations
@@ -74,16 +74,16 @@ When a user shares a CLI diff, run `scripts/parse_diff.py` on it to get structur
 
 ### Analyzing a blackbox log
 
-A `.bbl`/`.bfl` log is a **binary file** — you cannot read it as text. Always **run `scripts/analyze_blackbox.py`** to decode it; never try to interpret the raw bytes directly or answer from the filename alone.
+A `.bbl`/`.bfl` log is a **binary file** — you cannot read it as text. Always **run `python -m scripts.analyze_blackbox`** to decode it; never try to interpret the raw bytes directly or answer from the filename alone.
 
 `scripts/analyze_blackbox.py` parses **all** log headers by default and can fully decode the binary frame stream on demand (a pure-Python port of the official blackbox-log-viewer decoder). It needs `numpy` + `pandas` for the `--stats` and `--csv` modes.
 
 ```
-python scripts/analyze_blackbox.py <log.bbl>             # headers + build summary (fast)
-python scripts/analyze_blackbox.py <log.bbl> --stats     # decode frames + per-field min/max/mean/std
-python scripts/analyze_blackbox.py <log.bbl> --csv out.csv   # decoded main frames to CSV ('-' for stdout)
-python scripts/analyze_blackbox.py <log.bbl> --json      # full structured output
-python scripts/analyze_blackbox.py <log.bbl> --session N # pick one of several concatenated logs
+python -m scripts.analyze_blackbox <log.bbl>             # headers + build summary (fast)
+python -m scripts.analyze_blackbox <log.bbl> --stats     # decode frames + per-field min/max/mean/std
+python -m scripts.analyze_blackbox <log.bbl> --csv out.csv   # decoded main frames to CSV ('-' for stdout)
+python -m scripts.analyze_blackbox <log.bbl> --json      # full structured output
+python -m scripts.analyze_blackbox <log.bbl> --session N # pick one of several concatenated logs
 ```
 
 Workflow when a user shares a log:
@@ -92,17 +92,17 @@ Workflow when a user shares a log:
 2. **Decode with `--stats`** if you need actual flight data — gyro/motor/eRPM ranges, accelerometer (Z ≈ acc_1G at hover), throttle/setpoint behaviour, and corrupt-frame counts.
 3. **Export with `--csv`** when the user wants the raw decoded series for a spreadsheet or external tool.
 4. This is a **time-domain** analyzer — it does not do FFT/noise spectra. For that, still point users to https://blackbox.betaflight.com or PIDtoolbox.
-5. For **step response analysis**, use `scripts/step_response.py`.
+5. For **step response analysis**, use `python -m scripts.step_response`.
 
 ```
-python scripts/step_response.py <log.bbl>                        # text report, all axes
-python scripts/step_response.py <log.bbl> --axis roll            # single axis
-python scripts/step_response.py <log.bbl> --bandpass --active-only   # best coherence (recommended)
-python scripts/step_response.py <log.bbl> --bandpass --active-only --axis yaw
-python scripts/step_response.py <log.bbl> --json                 # machine-readable
-python scripts/step_response.py <log.bbl> --csv curves.csv       # export response curves
-python scripts/step_response.py <log.bbl> --nperseg 2048         # larger Welch window
-python scripts/step_response.py <decoded.csv>                    # from analyze_blackbox --csv
+python -m scripts.step_response <log.bbl>                        # text report, all axes
+python -m scripts.step_response <log.bbl> --axis roll            # single axis
+python -m scripts.step_response <log.bbl> --bandpass --active-only   # best coherence (recommended)
+python -m scripts.step_response <log.bbl> --bandpass --active-only --axis yaw
+python -m scripts.step_response <log.bbl> --json                 # machine-readable
+python -m scripts.step_response <log.bbl> --csv curves.csv       # export response curves
+python -m scripts.step_response <log.bbl> --nperseg 2048         # larger Welch window
+python -m scripts.step_response <decoded.csv>                    # from analyze_blackbox --csv
 ```
 
 **Signal quality flags** (improve coherence on noisy logs):
@@ -134,7 +134,7 @@ Do not ask the user to pick a style — show both. Note that exact numeric conve
 
 ## Version awareness
 
-Default to **Betaflight 2025.12** conventions unless the user specifies otherwise. Check `references/version-changes.md` for differences with 4.5.x and 4.4.x. If the user is on 4.4 or older, suggest upgrading after the diagnostic, not before — old tunes don't translate cleanly across major versions.
+Default to **Betaflight 2025.12** conventions unless the user specifies otherwise. Check `references/version-changes.md` (fallback: `version-changes.md`) for differences with 4.5.x and 4.4.x. If the user is on 4.4 or older, suggest upgrading after the diagnostic, not before — old tunes don't translate cleanly across major versions.
 
 ## Working with Claude in Chrome on app.betaflight.com
 
@@ -149,7 +149,7 @@ The PWA requires a Chromium-based browser. Firefox and Safari do not support Web
 
 ### What Claude in Chrome can do on the PWA
 
-- Navigate to `app.betaflight.com` and click through any tab (CLI, PID Tuning, Configuration, Modes, Motors, Ports, Failsafe, Receiver, OSD) — use `references/configuration.md` to know which tab does what and its documentation URL
+- Navigate to `app.betaflight.com` and click through any tab (CLI, PID Tuning, Configuration, Modes, Motors, Ports, Failsafe, Receiver, OSD) — use `references/configuration.md` (fallback: `configuration.md`) to know which tab does what and its documentation URL
 - Read values displayed in the DOM
 - Type commands in the CLI tab (`set xxx = yyy`, `diff all`, `save`)
 - Capture the CLI output and analyse it with this skill
@@ -191,6 +191,8 @@ The Python scripts are meant to be **executed** whenever a code-execution enviro
 
 - **Claude Code** — scripts run in your local shell with your local Python.
 - **claude.ai apps** — scripts run in the code-execution sandbox. This requires code execution / the analysis tool to be enabled for the conversation. Do not refuse to run them here.
+
+Always invoke scripts from the skill root using the module form: `python -m scripts.analyze_blackbox`. If that fails (e.g. `scripts` not found as a package), fall back to `cd scripts && python analyze_blackbox.py` then return to the previous directory.
 
 `analyze_blackbox.py` needs `numpy` + `pandas` only for `--stats` and `--csv`; header parsing and `--json` use the standard library alone. If `numpy`/`pandas` are missing in the sandbox, run header or `--json` mode, or `pip install numpy pandas` first.
 
