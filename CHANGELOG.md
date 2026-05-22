@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8] — 2026-05-22
+
+### Added
+- Setup wizard triggered by explicit phrases ("nouveau drone", "configure from scratch", "partir de zéro") — guides the user through build info collection, optional FC connection via MCP, preset selection, and config application or CLI diff export.
+- MCP integration section in SKILL.md: full tool catalogue (connection, live reads, real-time telemetry, writes), mandatory read→confirm→write→save pattern, and error handling rules.
+- MCP case added to Core workflow as the highest-priority artifact type when the betaflight-mcp server is available.
+
 ## [0.1.7] — 2026-05-22
 
 ### Changed

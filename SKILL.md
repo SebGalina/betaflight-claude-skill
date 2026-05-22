@@ -1,6 +1,6 @@
 ---
 name: betaflight
-description: Use this skill whenever the user mentions Betaflight, FPV drone firmware, flight controller configuration, PID tuning, blackbox log analysis, CLI diff/dump files, or asks about parameters like 'set rc_smoothing', 'set dyn_notch', motor/ESC setup, RX configuration, oscillations/wobbles/jello, propwash, filter tuning, or interpreting Betaflight Configurator settings. Also trigger when the user shares a .txt file containing 'diff all', 'dump', 'feature', 'set ' commands, or a .bbl/.bfl blackbox log — these are Betaflight artifacts even if not explicitly named. Use for builds (3" to 10" quads, cinewhoops, tinywhoops, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and troubleshooting flight issues. Do NOT skip this skill just because the user phrases the question casually ("mon drone wobble", "PID help", "config FC").
+description: Use this skill whenever the user mentions Betaflight, FPV drone firmware, flight controller configuration, PID tuning, blackbox log analysis, CLI diff/dump files, or asks about parameters like 'set rc_smoothing', 'set dyn_notch', motor/ESC setup, RX configuration, oscillations/wobbles/jello, propwash, filter tuning, or interpreting Betaflight Configurator settings. Also trigger when the user shares a .txt file containing 'diff all', 'dump', 'feature', 'set ' commands, or a .bbl/.bfl blackbox log — these are Betaflight artifacts even if not explicitly named. Use for builds (3" to 10" quads, cinewhoops, tinywhoops, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and troubleshooting flight issues. Do NOT skip this skill just because the user phrases the question casually ("mon drone wobble", "PID help", "config FC"). To configure a new drone from scratch or generate a baseline tune, use the setup wizard: say "configure from scratch", "nouveau drone", "wizard", or "partir de zéro".
 ---
 
 # Betaflight Assistant
@@ -14,14 +14,18 @@ This skill helps users configure, tune, troubleshoot, and analyze Betaflight-bas
 - The user shares a blackbox log file (`.bbl`, `.bfl`, `.txt` with header `H Product:Blackbox flight data recorder`).
 - The user describes a flight issue typical of Betaflight tuning: oscillations, propwash, jello, hot motors, drift, yaw spin, failsafes, RX dropouts.
 - The user mentions specific Betaflight versions (4.4, 4.5, 4.6) or asks about migrating between them.
+- The user wants to configure a new drone from scratch → **launch the setup wizard** (see below).
 
 When in doubt, apply this skill — under-triggering is a worse failure mode than over-triggering here.
+
+> **Wizard hint** — mention to the user that they can say _"configure from scratch"_, _"nouveau drone"_, _"wizard"_, or _"partir de zéro"_ to launch the guided setup wizard.
 
 ## Core workflow
 
 > **Script execution rule**: when the user shares a file, **always execute the relevant script** — never analyse the file manually or answer from memory alone. If the code-execution tool is unavailable, tell the user to enable it (Claude Desktop: conversation settings → Analysis tool) before proceeding.
 
 1. **Identify the artifact type** the user is providing:
+   - **FC branché + serveur MCP disponible** → **lire en direct** via les tools MCP (voir section "Intégration MCP" ci-dessous) — prioritaire sur tout le reste
    - **CLI diff/dump** (text file or pasted block) → **execute** `python -m scripts.parse_diff` on it
    - **Blackbox log** (`.bbl`/`.bfl`) → **execute** `python -m scripts.analyze_blackbox` on it (full frame decode on demand)
    - **Description of flight behavior** with no file → diagnostic interview
@@ -37,6 +41,167 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
 3. **Diagnose, don't guess.** If symptoms are ambiguous, ask one or two targeted questions (frame size, motor KV, prop, battery, firmware version) before recommending changes.
 
 4. **Recommend changes as CLI snippets** the user can paste directly into Betaflight Configurator's CLI tab. Always wrap them in a code block and end with `save`.
+
+## Intégration MCP — FC en direct
+
+Le serveur MCP Betaflight (`betaflight-mcp`) expose les tools MSP via FastMCP. Quand il est disponible, **toujours préférer la lecture live à demander à l'utilisateur de coller un diff** — c'est plus fiable et plus rapide.
+
+### Détecter si le MCP est disponible
+
+Les tools MCP sont disponibles si le serveur `betaflight-mcp` est configuré dans l'environnement Claude. Tenter un appel à `list_serial_ports` : s'il répond, le serveur est actif. S'il échoue, basculer en mode offline (diff CLI).
+
+### Catalogue des tools et quand les utiliser
+
+#### Connexion (toujours en premier)
+
+| Tool | Quand l'utiliser |
+|------|-----------------|
+| `list_serial_ports` | Déterminer le port avant de connecter |
+| `connect(port, baudrate)` | Ouvrir la session MSP — appeler une seule fois par conversation |
+| `disconnect` | Fin de session ou avant de passer à un autre FC |
+
+Proposer le port détecté à l'utilisateur, ne pas connecter sans qu'il confirme.
+
+#### Lecture de l'état courant
+
+Appeler ces tools **avant** de proposer tout changement — ne jamais travailler à l'aveugle :
+
+| Tool | Données retournées | Cas d'usage |
+|------|-------------------|-------------|
+| `get_board_info` | Firmware, variante, MCU, version API | Identifier le FC, vérifier la version BF |
+| `get_fc_status` | Arming flags, cycle time, charge CPU | Diagnostiquer un problème d'armement |
+| `get_pid_values` | P/I/D par axe (roll, pitch, yaw, level) | Avant tout ajustement PID |
+| `get_rates` | rc_rate, expo, superrate, throttle | Avant tout ajustement rates |
+| `get_filter_config` | Gyro lowpass/notch, Dterm, RPM filter | Diagnostiquer oscillations / bruit |
+| `get_pid_advanced` | Feedforward, anti-gravity, TPA, iterm relax, D-Max | Tuning avancé |
+| `get_advanced_config` | Protocole ESC (DSHOT), PID dénominateurs, PWM rate | Vérifier DSHOT, looptime |
+| `get_feature_config` | Features actives (AIRMODE, GPS, LED…) | Vérifier la config features |
+| `get_modes` | AUX switches et plages µs | Diagnostiquer modes RC |
+| `get_sensor_config` | Accéléro, baro, magnéto | Problèmes de capteurs |
+
+#### Télémétrie temps réel
+
+À utiliser pour le diagnostic live, pas pour la configuration :
+
+| Tool | Données retournées | Cas d'usage |
+|------|-------------------|-------------|
+| `get_imu_data` | Accéléro (g), gyro (°/s), magnéto | Vérifier vibrations au sol |
+| `get_attitude` | Roulis, tangage, cap (°) | Vérifier l'horizon artificiel |
+| `get_battery` | Tension (V), courant (A), mAh, RSSI | Diagnostic batterie |
+| `get_battery_state` | Cellules, capacité, état (OK/WARNING/CRITICAL) | Alerte batterie faible |
+| `get_rc` | Canaux RC (µs) | Vérifier la réception radio |
+| `snapshot_rc_delta(baseline, threshold)` | Canaux qui ont bougé au-delà du seuil | Identifier quel switch/stick est actif |
+| `measure_rc_noise(duration_s, channels)` | Bruit 95e percentile + deadband suggéré | Diagnostiquer bruit RC sticks au repos |
+| `get_motors` | Sorties moteurs (µs) | Vérifier les moteurs au sol (props-off) |
+
+#### Écriture — pattern obligatoire
+
+**Toujours suivre cet ordre, sans exception :**
+
+```
+1. get_pid_values / get_rates / get_filter_config   ← lire l'état actuel
+2. Calculer les nouvelles valeurs
+3. Présenter le résumé à l'utilisateur et demander confirmation explicite
+4. set_pid_values / set_rates                        ← appliquer après confirmation
+5. save_config                                       ← sauvegarder en EEPROM
+```
+
+Ne jamais enchaîner `set_*` + `save_config` sans confirmation intermédiaire. `save_config` redémarre le FC.
+
+| Tool | Paramètres | Contraintes |
+|------|-----------|-------------|
+| `set_pid_values(axis, p, i, d)` | `axis` : roll/pitch/yaw/level — `p`,`i`,`d` : 0–255 | Vérifier les plages dans `references/parameters.md` |
+| `set_rates(rc_rate, rc_expo, roll_rate, …)` | Tous optionnels — seuls les fournis sont mis à jour | Idem |
+| `save_config` | Aucun | Provoque un reboot FC — prévenir l'utilisateur |
+| `reboot_fc` | Aucun | Utiliser seulement si explicitement demandé |
+
+### Gestion des erreurs MCP
+
+- Si un tool retourne `{"error": "..."}` : signaler à l'utilisateur, ne pas continuer l'écriture.
+- Si `connect` échoue : proposer un autre port de la liste `list_serial_ports`, ou basculer en mode offline.
+- Si `set_pid_values` retourne `{"errors": [...]}` : afficher les erreurs de validation, ne pas appeler `save_config`.
+- Si le serveur MCP n'est pas disponible : continuer en mode offline (diff CLI) sans bloquer.
+
+## Setup wizard (configuration initiale)
+
+### Déclencheurs
+
+Lance ce wizard **uniquement** si l'utilisateur exprime explicitement un besoin de configuration from scratch. Phrases typiques (non exhaustives) :
+
+- "j'ai acheté un drone / un nouveau FC"
+- "je veux configurer de zéro / partir de zéro"
+- "wizard", "configure from scratch", "nouveau drone"
+- "premier vol", "jamais configuré Betaflight"
+
+Ne pas déclencher sur : "aide-moi avec mes PIDs", "mon drone wobble", "c'est quoi le dyn_notch" — ces cas restent dans le flux diagnostic normal.
+
+### Étape 1 — Collecter les infos build
+
+Poser ces questions en **une seule fois**, regroupées :
+
+| Info | Exemples |
+|------|----------|
+| Type et taille de frame | 3" cinewhoop, 5" freestyle, 7" longrange, tinywhoop… |
+| Moteurs (KV) | 2306 2450KV, 1404 3800KV… |
+| Taille d'hélices | 5×4.3×3, 3×2×3… |
+| Batterie (S) | 3S, 4S, 6S |
+| Protocole ESC | DSHOT300, DSHOT600 — si inconnu, rester sur DSHOT300 |
+| Protocole récepteur | ELRS, CRSF, SBUS, FPort, iBUS… |
+| Style de vol | Freestyle, racing, cinématique, longrange |
+| Niveau | Débutant, intermédiaire, confirmé |
+
+Ne pas demander plus d'une fois — si l'utilisateur a déjà donné une partie des infos dans son message, ne pas redemander.
+
+### Étape 2 — Connexion au FC (optionnel)
+
+Demander si le FC est branché en USB :
+
+- **Oui** → appeler `list_serial_ports`, proposer le port détecté, puis `connect` → `get_board_info` pour confirmer la version firmware.
+- **Non / pas de serveur MCP** → mode offline : générer un diff CLI à coller dans Betaflight Configurator.
+
+Si `connect` échoue : basculer automatiquement en mode offline sans bloquer le wizard.
+
+### Étape 3 — Charger le preset
+
+Sélectionner le preset depuis `assets/presets/` selon le build :
+
+| Build | Preset |
+|-------|--------|
+| 3" cinewhoop / nano | `cinewhoop-3inch.txt` |
+| 5" freestyle / racing | `5inch-freestyle.txt` |
+| 7" / longrange | `longrange-7inch.txt` |
+
+Si aucun preset ne correspond exactement, prendre le plus proche et le dire à l'utilisateur.
+
+### Étape 4 — Appliquer ou exporter
+
+**Mode connecté (MCP disponible) :**
+
+1. Lire l'état actuel : `get_pid_values`, `get_rates`, `get_filter_config`
+2. Calculer les valeurs cibles depuis le preset + infos build
+3. Présenter le résumé des changements à l'utilisateur et demander confirmation
+4. Appliquer : `set_pid_values` (roll, pitch, yaw) + `set_rates` — **uniquement après confirmation explicite**
+5. `save_config` → informer l'utilisateur que le FC va redémarrer
+
+**Mode offline :**
+
+Générer un bloc CLI complet prêt à coller dans l'onglet CLI de Betaflight Configurator :
+
+```
+# Tune de base — [type de build] — généré par Betaflight Assistant
+# Betaflight [version] · [date]
+set pid_roll_p = ...
+set pid_roll_i = ...
+...
+save
+```
+
+### Règles du wizard
+
+- **Ne jamais appliquer `save_config` sans confirmation explicite** de l'utilisateur.
+- Toujours rappeler de retirer les hélices avant tout test moteur.
+- Si les valeurs calculées sortent des plages safe de `references/parameters.md`, le signaler clairement et demander confirmation avant d'aller plus loin.
+- Le wizard génère une **configuration de départ** — pas un tune final. Toujours finir en recommandant un vol de test et un ajustement PID progressif.
 
 ## Output conventions
 
