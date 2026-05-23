@@ -23,6 +23,7 @@ Usage:
     python step_response.py <decoded.csv>                   # from analyze_blackbox --csv
     python step_response.py <log.bbl> --json                # machine-readable output
     python step_response.py <log.bbl> --csv curves.csv      # export response curves
+    python step_response.py <log.bbl> --plot                # render matplotlib figure inline
 
 Signal quality flags (improve coherence on noisy/freestyle logs):
     --bandpass              Bandpass 5-80 Hz before Welch (cuts DC drift + high-freq noise)
@@ -308,6 +309,7 @@ def analyse(
         band = (freqs >= 5) & (freqs <= 80)
         mean_coh = float(np.mean(coh[band])) if band.any() else float(np.mean(coh))
 
+        coh_band = (freqs >= 5) & (freqs <= 80)
         results[axis] = {
             **m,
             "mean_coherence": round(mean_coh, 3),
@@ -318,9 +320,80 @@ def analyse(
                 for t, s in zip(times_ms, step)
                 if t <= 80.0
             ],
+            # coherence curve in the PID-relevant band (freq_hz, coherence)
+            "coherence_curve": [
+                [round(float(f), 2), round(float(c), 4)]
+                for f, c in zip(freqs[coh_band], coh[coh_band])
+            ],
         }
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Plotting
+# ---------------------------------------------------------------------------
+
+def _plot_results(output: dict, title_suffix: str = "") -> None:
+    try:
+        import matplotlib.pyplot as plt
+    except ImportError:
+        sys.exit("matplotlib required for --plot: pip install matplotlib")
+
+    COLORS = {"roll": "#1f77b4", "pitch": "#ff7f0e", "yaw": "#2ca02c"}
+    axes_data = output["axes"]
+
+    fig, (ax_step, ax_coh) = plt.subplots(
+        2, 1, figsize=(11, 8), gridspec_kw={"height_ratios": [3, 2]}
+    )
+    fig.suptitle(f"Betaflight Step Response{title_suffix}", fontsize=13, fontweight="bold")
+
+    # --- Step response panel ---
+    ax_step.axhline(1.0, color="gray", linestyle="--", linewidth=0.8, alpha=0.7)
+    ax_step.axhspan(0.98, 1.02, color="gray", alpha=0.12, label="±2 % settling band")
+    max_val = 1.5
+    for axis, data in axes_data.items():
+        pts = data.get("step_response", [])
+        if not pts:
+            continue
+        ts, vs = zip(*pts)
+        max_val = max(max_val, max(vs))
+        label = (
+            f"{axis}  "
+            f"rise={data.get('rise_time_ms', '?')} ms  "
+            f"OS={data.get('overshoot_pct', 0):.0f}%  "
+            f"coh={data.get('mean_coherence', 0):.2f}"
+        )
+        ax_step.plot(ts, vs, label=label, color=COLORS.get(axis), linewidth=1.8)
+
+    ax_step.set_xlim(0, 80)
+    ax_step.set_ylim(-0.15, min(max_val * 1.1, 2.0))
+    ax_step.set_xlabel("Time (ms)")
+    ax_step.set_ylabel("Normalized response")
+    ax_step.set_title("Step response (setpoint → gyro)", fontsize=10)
+    ax_step.legend(fontsize=9)
+    ax_step.grid(True, alpha=0.3)
+
+    # --- Coherence panel ---
+    ax_coh.axhline(0.7, color="green",  linestyle="--", linewidth=0.9, alpha=0.8, label="0.70 — reliable")
+    ax_coh.axhline(0.5, color="orange", linestyle="--", linewidth=0.9, alpha=0.8, label="0.50 — noisy")
+    for axis, data in axes_data.items():
+        pts = data.get("coherence_curve", [])
+        if not pts:
+            continue
+        fs_arr, cs = zip(*pts)
+        ax_coh.plot(fs_arr, cs, label=axis, color=COLORS.get(axis), linewidth=1.5)
+
+    ax_coh.set_xlim(5, 80)
+    ax_coh.set_ylim(0, 1.05)
+    ax_coh.set_xlabel("Frequency (Hz)")
+    ax_coh.set_ylabel("Coherence")
+    ax_coh.set_title("Signal coherence (5–80 Hz)", fontsize=10)
+    ax_coh.legend(fontsize=9)
+    ax_coh.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    plt.show()
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +417,8 @@ def main():
                     help="Keep only frames around fast stick inputs (improves coherence on noisy logs)")
     ap.add_argument("--nperseg", type=int, default=None, metavar="N",
                     help="Welch window size in samples (default: auto ~64 ms, power of 2)")
+    ap.add_argument("--plot", action="store_true",
+                    help="Render step response + coherence figure (requires matplotlib)")
     args = ap.parse_args()
 
     path = Path(args.input)
@@ -373,6 +448,10 @@ def main():
             "flags": flags,
             "axes": results,
         }
+
+        if args.plot:
+            flags_str = f"  [{', '.join(flags)}]" if flags else ""
+            _plot_results(output, title_suffix=f" — {path.name}{flags_str}")
 
         if args.json:
             print(json.dumps(output, indent=2))

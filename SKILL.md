@@ -119,6 +119,8 @@ python -m scripts.step_response <log.bbl>                        # text report, 
 python -m scripts.step_response <log.bbl> --axis roll            # single axis
 python -m scripts.step_response <log.bbl> --bandpass --active-only   # best coherence (recommended)
 python -m scripts.step_response <log.bbl> --bandpass --active-only --axis yaw
+python -m scripts.step_response <log.bbl> --plot                 # render step response + coherence figure
+python -m scripts.step_response <log.bbl> --bandpass --active-only --plot  # best quality + figure
 python -m scripts.step_response <log.bbl> --json                 # machine-readable
 python -m scripts.step_response <log.bbl> --csv curves.csv       # export response curves
 python -m scripts.step_response <log.bbl> --nperseg 2048         # larger Welch window
@@ -232,5 +234,5 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 - `scripts/blackbox_decoder.py` — Pure-Python blackbox decoder (faithful port of the official log-viewer); used by `analyze_blackbox.py`
 - `scripts/blackbox_presenter.py` — Human-readable presentation layer: scales raw values to physical units, decodes enum headers, and computes rates in °/s; used by `analyze_blackbox.py` and `parse_diff.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors
-- `scripts/step_response.py` — Closed-loop step response analyser (setpoint → gyro) using Welch's cross-spectral method; rise time, overshoot, settling time, delay, per-axis diagnosis
+- `scripts/step_response.py` — Closed-loop step response analyser (setpoint → gyro) using Welch's cross-spectral method; rise time, overshoot, settling time, delay, per-axis diagnosis; `--plot` renders an inline matplotlib figure (step response + coherence curves)
 - `assets/presets/` — Starter CLI snippets per build class (3", 5" freestyle, 7" longrange, cinewhoop)

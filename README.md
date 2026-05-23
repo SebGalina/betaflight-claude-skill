@@ -74,6 +74,9 @@ python -m scripts.step_response log.bbl
 # Identification flight (full-stick step inputs) — reliable results
 python -m scripts.step_response log.bbl --bandpass --active-only
 
+# Render inline figure (step response + coherence, all axes)
+python -m scripts.step_response log.bbl --bandpass --active-only --plot
+
 # Single axis, JSON output, or export curves
 python -m scripts.step_response log.bbl --bandpass --active-only --axis roll
 python -m scripts.step_response log.bbl --bandpass --active-only --json
@@ -197,7 +200,7 @@ Once installed, just talk to Claude — no explicit invocation needed:
 python -m scripts.parse_diff evals/sample_diff.txt
 python -m scripts.validate_config evals/sample_diff.txt
 python -m scripts.analyze_blackbox your_log.bbl --stats
-python -m scripts.step_response your_log.bbl --bandpass --active-only
+python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
 python -m scripts.run_evals --ids 1 2 3
 ```
 
