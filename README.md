@@ -6,23 +6,26 @@
 [![Betaflight](https://img.shields.io/badge/Betaflight-2025.12-orange.svg)](https://betaflight.com/)
 [![Claude Skill](https://img.shields.io/badge/Claude-Agent_Skill-purple.svg)](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
-A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies.
+A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies — and can also read and write directly to a live flight controller via the MCP server.
 
-## ✨ What it does
+## What it does
 
 Once loaded, the skill lets Claude:
 
-- 🔧 **Diagnose flight issues** from natural-language descriptions (wobbles, hot motors, oscillations, drift, propwash, jello)
-- 📄 **Parse and analyze CLI diff/dump files** you share
-- 📊 **Decode blackbox logs** — full binary frame decode with per-field statistics and CSV export (see below)
-- ⚡ **Generate paste-ready CLI configs** for common build classes (5" freestyle, 3" cinewhoop, 7" longrange)
-- 🔄 **Migrate configurations** across major Betaflight versions (4.4 → 4.5 → 4.6)
-- ⚠️ **Flag deprecated parameters** that would error on import to newer firmware
-- 📏 **Recommend safe value ranges** for PIDs, filters, rates, and ESC settings
+- **Diagnose flight issues** from natural-language descriptions (wobbles, hot motors, oscillations, drift, propwash, jello)
+- **Parse and analyze CLI diff/dump files** you share
+- **Decode blackbox logs** — full binary frame decode with per-field statistics and CSV export
+- **Analyze step response** — closed-loop system identification (setpoint → gyro) via Welch cross-spectral method; rise time, overshoot, settling time, coherence
+- **Generate paste-ready CLI configs** for common build classes (5" freestyle, 3" cinewhoop, 7" longrange)
+- **Guide you through a setup wizard** when configuring a new drone from scratch
+- **Read and write a live FC** via the `betaflight-mcp` server (PIDs, filters, rates, ports — without a diff file)
+- **Migrate configurations** across major Betaflight versions (4.4 → 4.5 → 4.6 → 2025.12)
+- **Flag deprecated parameters** that would error on import to newer firmware
+- **Recommend safe value ranges** for PIDs, filters, rates, and ESC settings
 
-**Default tuning target:** Betaflight 4.5.x (4.4 and 4.6 differences are documented in the references). The blackbox decoder itself is version-agnostic.
+**Default tuning target:** Betaflight 2025.12 (4.5.x and 4.4.x differences are documented in `references/version-changes.md`).
 
-## 🚀 Installation
+## Installation
 
 ### Claude Code
 
@@ -46,42 +49,95 @@ git clone https://github.com/SebGalina/betaflight-claude-skill.git .claude/skill
 
 Upload via the Skills API — see the [official guide](https://platform.claude.com/docs/en/build-with-claude/skills-guide).
 
-## 📊 Blackbox log analysis
+## Blackbox log analysis
 
 `scripts/analyze_blackbox.py` parses **all** headers by default and, on demand, fully decodes the binary frame stream (I/P/S/G/H/E frames). The decoder (`scripts/blackbox_decoder.py`) is a faithful pure-Python port of the official [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — every field encoding and predictor.
 
 ```bash
-python scripts/analyze_blackbox.py log.bbl              # headers + build summary (fast, stdlib only)
-python scripts/analyze_blackbox.py log.bbl --stats      # decode frames + per-field min/max/mean/std
-python scripts/analyze_blackbox.py log.bbl --csv out.csv  # decoded main frames to CSV ('-' for stdout)
-python scripts/analyze_blackbox.py log.bbl --json       # full structured output
-python scripts/analyze_blackbox.py log.bbl --session N  # pick one of several concatenated logs
+python -m scripts.analyze_blackbox log.bbl              # headers + build summary (fast, stdlib only)
+python -m scripts.analyze_blackbox log.bbl --stats      # decode frames + per-field min/max/mean/std
+python -m scripts.analyze_blackbox log.bbl --csv out.csv  # decoded main frames to CSV ('-' for stdout)
+python -m scripts.analyze_blackbox log.bbl --json       # full structured output
+python -m scripts.analyze_blackbox log.bbl --session N  # pick one of several concatenated logs
 ```
 
 The `--stats` and `--csv` modes require `numpy` and `pandas`; header parsing and `--json` work with the standard library alone.
 
-This is a **time-domain** analyzer (real decoded values, statistics, export). For FFT / noise spectra, use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
+## Step response analysis
 
-### Step response analysis
-
-`scripts/step_response.py` estimates the closed-loop step response (setpoint → gyro) per axis using Welch's cross-spectral method. Reports rise time, overshoot %, settling time, delay, coherence, and per-axis tuning diagnosis.
+`scripts/step_response.py` estimates the closed-loop step response (setpoint → gyro) per axis using Welch's cross-spectral density method. Reports rise time, overshoot %, settling time, delay, coherence, and per-axis tuning diagnosis.
 
 ```bash
 # Any flight log — indicative results
-python scripts/step_response.py log.bbl
+python -m scripts.step_response log.bbl
 
 # Identification flight (full-stick step inputs) — reliable results
-python scripts/step_response.py log.bbl --bandpass --active-only
+python -m scripts.step_response log.bbl --bandpass --active-only
 
 # Single axis, JSON output, or export curves
-python scripts/step_response.py log.bbl --bandpass --active-only --axis roll
-python scripts/step_response.py log.bbl --bandpass --active-only --json
-python scripts/step_response.py log.bbl --bandpass --active-only --csv curves.csv
+python -m scripts.step_response log.bbl --bandpass --active-only --axis roll
+python -m scripts.step_response log.bbl --bandpass --active-only --json
+python -m scripts.step_response log.bbl --bandpass --active-only --csv curves.csv
 ```
 
 **For reliable results** (coherence > 0.7): fly a dedicated identification session — full stick → neutral → full stick, 3–5 times per axis, no other maneuvers. Then run with `--bandpass --active-only`.
 
-## 📦 Repository structure
+## Setup wizard
+
+Say _"configure from scratch"_, _"nouveau drone"_, _"wizard"_, or _"partir de zéro"_ to launch the guided setup wizard. Claude will ask all build info questions in a single grouped message (frame size, motors, props, battery, ESC protocol, RX, flight style), then select the best preset from `assets/presets/` and apply it — via MCP if the FC is live, or as a copy-paste CLI diff otherwise.
+
+## MCP — live FC connection
+
+With the `betaflight-mcp` server running, Claude can read and write the FC directly without needing a diff file:
+
+- **Reads**: PIDs, filter config, rates, ports, motor config, sensor data
+- **Writes**: any `set` parameter, PID values, rates — always with explicit confirmation before `save_config`
+
+Detection is automatic: Claude attempts `list_serial_ports` on startup; if the server responds, it switches to live mode. Otherwise it falls back to offline (diff CLI) mode without blocking.
+
+See `references/mcp-tools.md` for the full tool catalogue, write pattern, and error handling.
+
+## Automated eval runner
+
+`scripts/run_evals.py` runs the skill's test suite against the Claude API. It loads `SKILL.md` + all `references/*.md` as the system prompt, sends each eval prompt to a **skill model** (Sonnet by default), and uses a **judge model** (Haiku) to score pass/fail automatically.
+
+### Setup
+
+```bash
+pip install anthropic python-dotenv
+# Add your API key to a .env file at the repo root, or export it:
+echo "ANTHROPIC_API_KEY=sk-..." > .env
+```
+
+### Usage
+
+```bash
+python -m scripts.run_evals                   # run all evals
+python -m scripts.run_evals --ids 6 7 8       # run specific evals by ID
+python -m scripts.run_evals --verbose         # also print full skill responses
+python -m scripts.run_evals --model sonnet    # override the skill model
+```
+
+### What the evals cover
+
+| ID | Name | What it checks |
+|----|------|----------------|
+| 1 | diagnose-wobble-from-symptoms | Prefers mechanical causes over PID tuning after a hardware change |
+| 2 | generate-cli-config-5inch | Generates a complete, props-off-warned CLI config for a 5" 6S build |
+| 3 | analyze-shared-diff | Runs `parse_diff.py`, summarizes build, flags anomalies |
+| 4 | migration-4.4-to-4.5 | References `version-changes.md`, lists renamed params, migration workflow |
+| 5 | hot-motors-troubleshooting | Ranks D-term as primary suspect, suggests specific CLI changes |
+| 6 | wizard-trigger-new-drone | Triggers wizard and groups all build questions in one message |
+| 7 | wizard-trigger-from-scratch | Same, also mentions optional MCP connection |
+| 8 | wizard-no-trigger-on-pid-question | Does NOT trigger wizard for a PID tuning question |
+| 9 | wizard-no-trigger-on-troubleshooting | Does NOT trigger wizard for a troubleshooting question |
+| 10 | mcp-live-read-priority | Prefers live MCP read over asking for a diff when FC is plugged in |
+| 11 | mcp-write-requires-confirmation | Reads first, shows proposed change, waits for confirmation before writing |
+| 12 | safety-no-failsafe-disable | Refuses to disable arming checks; explains why and offers to diagnose instead |
+
+The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
+
+## Repository structure
 
 ```
 .
@@ -92,25 +148,28 @@ python scripts/step_response.py log.bbl --bandpass --active-only --csv curves.cs
 │   ├── pid-tuning.md         PID, filter, and rates tuning guide
 │   ├── configuration.md      Configurator tab navigation + all doc URLs
 │   ├── troubleshooting.md    Symptom-to-cause map
-│   └── version-changes.md    Migration notes between versions
+│   ├── version-changes.md    Migration notes between versions
+│   ├── mcp-tools.md          MCP tool catalogue, write pattern, error handling
+│   └── wizard.md             Setup wizard flow, tables, and rules
 ├── scripts/                  Python tools
 │   ├── parse_diff.py         Parser for CLI diff/dump output
 │   ├── validate_config.py    Config sanity checker
 │   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)
 │   ├── blackbox_decoder.py   Pure-Python blackbox frame decoder
 │   ├── blackbox_presenter.py Human-readable scaling + enum decoding
-│   └── step_response.py      Closed-loop step response (Welch method)
+│   ├── step_response.py      Closed-loop step response (Welch cross-spectral method)
+│   └── run_evals.py          Automated eval runner (Claude API + judge model)
 ├── assets/
 │   └── presets/              Starter CLI configs
 │       ├── 5inch-freestyle.txt
 │       ├── cinewhoop-3inch.txt
 │       └── longrange-7inch.txt
 └── evals/                    Test cases
-    ├── evals.json
-    └── sample_diff.txt
+    ├── evals.json            12 eval cases (diagnosis, wizard, MCP, safety)
+    └── sample_diff.txt       Sample CLI diff used by eval #3
 ```
 
-## 💬 Usage examples
+## Usage examples
 
 Once installed, just talk to Claude — no explicit invocation needed:
 
@@ -128,23 +187,27 @@ Once installed, just talk to Claude — no explicit invocation needed:
 
 > "The step response shows 35% overshoot on roll — what should I change in my PIDs?"
 
-## 🧪 Running the scripts
+> "J'ai acheté mon premier drone, configure-le de zéro." *(launches the setup wizard)*
+
+> "Mon FC est branché — lis mes PIDs et dis-moi si c'est correct pour un 5\" freestyle." *(live MCP read)*
+
+## Running the scripts manually
 
 ```bash
-python scripts/parse_diff.py evals/sample_diff.txt
-python scripts/validate_config.py evals/sample_diff.txt
-python scripts/analyze_blackbox.py your_log.bbl --stats
+python -m scripts.parse_diff evals/sample_diff.txt
+python -m scripts.validate_config evals/sample_diff.txt
+python -m scripts.analyze_blackbox your_log.bbl --stats
+python -m scripts.step_response your_log.bbl --bandpass --active-only
+python -m scripts.run_evals --ids 1 2 3
 ```
 
-The skill's test cases live in `evals/evals.json`.
+## Limitations
 
-## ⚠️ Limitations
+- **No gyro noise spectra or filter response visualization.** `analyze_blackbox.py` works in the time domain (decoded values, statistics). For noise floor and filter response plots, use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox. For closed-loop step response and PID diagnosis via cross-spectral analysis, use `scripts/step_response.py`.
+- **Defaults to Betaflight 2025.12 conventions.** Older configs may contain deprecated or renamed parameters; the skill flags them but does not auto-migrate.
+- **No real-time link without the MCP server.** Without `betaflight-mcp`, the skill works on files and descriptions only. With it, Claude can read and write the FC directly (see the MCP section above).
 
-- **No FFT / noise spectra.** The blackbox analyzer decodes real values and computes time-domain statistics; for frequency analysis use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox. Step response analysis is available via `scripts/step_response.py`.
-- **Defaults to Betaflight 2025.12 conventions.** 4.5.x and older configs may contain deprecated or renamed parameters; the skill flags them but does not auto-migrate.
-- **No real-time link to the flight controller.** The skill works on files and descriptions — it does not talk to a USB-connected FC. (Claude in Chrome can drive the `app.betaflight.com` PWA; see `SKILL.md`.)
-
-## 🛡️ Safety
+## Safety
 
 The skill follows strict rules:
 
@@ -152,22 +215,23 @@ The skill follows strict rules:
 - **Always warns** before motor-direction / mapping changes (props-off testing)
 - **Flags** suspicious values instead of applying them silently
 - **Reminds** that new tunes must be tested in a safe area
+- **Never writes to the FC** (MCP mode) without explicit user confirmation before `save_config`
 
-## 🤝 Contributing
+## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Issues and PRs welcome.
 
-## 📜 License
+## License
 
 Apache 2.0 — see [LICENSE.txt](LICENSE.txt).
 
-## 🔗 Links
+## Links
 
 - [Betaflight](https://betaflight.com/) — official project
 - [Betaflight documentation](https://betaflight.com/docs)
 - [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — the decoder this skill ports
 - [Claude Skills documentation](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
-## ⚖️ Disclaimer
+## Disclaimer
 
 Community project, not affiliated with the Betaflight project or any FC manufacturer. Betaflight is a trademark of its respective owners. This skill relies on publicly documented Betaflight conventions.
