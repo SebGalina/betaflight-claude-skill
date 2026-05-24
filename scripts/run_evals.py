@@ -90,7 +90,7 @@ def build_user_message(eval_case: dict) -> str:
 def run_skill(client: anthropic.Anthropic, system: str, user_message: str, model: str) -> str:
     response = client.messages.create(
         model=model,
-        max_tokens=1024,
+        max_tokens=4096,
         system=system,
         messages=[{"role": "user", "content": user_message}],
     )
