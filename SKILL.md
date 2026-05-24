@@ -36,6 +36,7 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
    - CLI command syntax → `references/cli-commands.md` (fallback: `cli-commands.md`)
    - Specific `set` parameters → `references/parameters.md` (fallback: `parameters.md`)
    - Flight symptoms → `references/troubleshooting.md` (fallback: `troubleshooting.md`)
+   - Arming failures / arming flags → `references/arming-flags.md` (fallback: `arming-flags.md`)
    - Version differences → `references/version-changes.md` (fallback: `version-changes.md`)
 
 3. **Diagnose, don't guess.** If symptoms are ambiguous, ask one or two targeted questions (frame size, motor KV, prop, battery, firmware version) before recommending changes.
@@ -221,6 +222,7 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 
 ## Bundled resources
 
+- `references/arming-flags.md` — Tous les arming prevention flags : codes, causes, solutions, pièges courants
 - `references/mcp-tools.md` — Catalogue complet des tools MCP, pattern écriture, gestion erreurs
 - `references/wizard.md` — Flux détaillé du wizard de configuration initiale
 - `references/cli-commands.md` — Betaflight CLI command reference
