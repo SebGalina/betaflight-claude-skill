@@ -2,90 +2,90 @@
 
 Source: https://betaflight.com/docs/wiki/guides/current/Arming-Sequence-And-Safety
 
-Depuis Betaflight 3.2, le système de prévention d'armement expose des flags précis qui indiquent pourquoi le FC refuse de s'armer. Ils sont visibles dans :
-- le CLI (`status`)
-- l'OSD (affiché en vol si armement échoue)
-- les bips buzzer (voir ci-dessous)
-- Betaflight Configurator (onglet Status)
+Since Betaflight 3.2, the arming prevention system exposes precise flags explaining why the FC refuses to arm. Visible in:
+- CLI (`status`)
+- OSD (displayed when arming fails)
+- Buzzer beep pattern (see below)
+- Betaflight Configurator (Status tab)
 
-## Lecture via CLI
+## Reading flags via CLI
 
 ```
 status
 ```
 
-La ligne `Arming disable flags:` liste tous les flags actifs. Si elle est absente ou vide, le FC est armable.
+The `Arming disable flags:` line lists all active flags. If absent or empty, the FC is ready to arm.
 
-## Décodage par buzzer
+## Buzzer decoding
 
-Signal : **5 bips courts** d'attention, puis bips longs + bips courts espacés.
+Pattern: **5 short beeps** (attention), then long beeps + spaced short beeps.
 
-Formule : `code = (nb_longs × 5) + nb_courts`
+Formula: `code = (long_beeps × 5) + short_beeps`
 
-Exemple : 1 long + 2 courts = code 7 (`CRASH`)
+Example: 1 long + 2 short = code 7 (`CRASH`)
 
-## Tableau des flags
+## Flag table
 
-| Flag | Code | Cause | Solution |
-|------|------|-------|----------|
-| `NOGYRO` | 1 | Gyroscope non détecté au démarrage | Problème matériel ou firmware — reflasher, vérifier soudures |
-| `FAILSAFE` | 2 | Failsafe en cours d'exécution | Attendre fin du failsafe, vérifier signal RX |
-| `RXLOSS` / `RX_FAILSAFE` | 3 | Signal récepteur absent ou invalide | Vérifier liaison radio, binding, UART RX |
-| `BADRX` / `NOT_DISARMED` | 4 | RX en recovery ET switch arm déjà ON | Désactiver le switch d'armement avant mise sous tension |
-| `BOXFAILSAFE` | 5 | Switch failsafe activé sur la télécommande | Désactiver le switch failsafe |
-| `RUNAWAY` | 6 | Runaway Takeoff Prevention déclenché | Désarmer, vérifier PIDs et configuration moteurs |
-| `CRASH` | 7 | Crash Recovery actif | Désarmer |
-| `THROTTLE` | 8 | Throttle au-dessus de `min_check` à l'armement | Baisser le throttle en dessous de `min_check` (défaut ~1050 µs) |
-| `ANGLE` | 9 | FC incliné au-delà de `small_angle` | Poser le drone à plat — défaut 25°, configurable via `set small_angle` |
-| `BOOTGRACE` | 10 | Tentative d'armement trop rapide après mise sous tension | Attendre `pwr_on_arm_grace` secondes (défaut 5 s) |
-| `NOPREARM` | 11 | Prearm switch configuré mais non activé | Activer le prearm switch en premier |
-| `LOAD` | 12 | Charge CPU trop élevée | Désactiver des fonctionnalités, réduire la fréquence gyro/PID |
-| `CALIB` | 13 | Calibration des capteurs en cours | Attendre la fin de la calibration |
-| `CLI` | 14 | Session CLI ouverte | Taper `exit` dans le CLI |
-| `CMS` | 15 | Menu de configuration OSD (CMS) ouvert | Quitter le menu CMS |
-| `OSD` | 16 | Menu OSD actif | Quitter le menu OSD |
-| `BST` | 16 | Télémétrie Black Sheep (BST) désarmée | Consulter la doc du matériel BST |
-| `MSP` | 17 | Connexion MSP active (Betaflight Configurator ouvert) | Déconnecter le Configurator |
-| `PARALYZE` | 18 | Mode Paralyze activé (désarmement permanent) | Redémarrer le FC |
-| `GPS` | 19 | GPS Rescue configuré mais pas assez de satellites | Attendre le fix GPS (≥ satellites requis) ou désactiver GPS Rescue |
-| `RESCUE_SW` | 20 | Switch GPS Rescue en position active avant armement | Désactiver le switch GPS Rescue |
-| `RPMFILTER` / `DSHOT_TELEM` | 21 | RPM filter activé mais télémétrie DSHOT invalide | Vérifier `dshot_bidir = ON`, firmware BLHeli_32/AM32, câblage moteurs |
-| `REBOOT_REQD` | 22 | Un changement de configuration nécessite un redémarrage | Redémarrer le FC (`reboot` dans le CLI ou débrancher) |
-| `DSHOT_BBANG` | 23 | DSHOT Bitbang en échec | Conflit de timers — passer sur un protocole non-Bitbang ou vérifier la config `resource` |
-| `NO_ACC_CAL` | 24 | Accéléromètre jamais calibré | Calibrer l'accéléromètre (onglet Setup du Configurator) ou désactiver les modes qui en dépendent |
-| `MOTOR_PROTO` | 25 | Protocole moteur/ESC non sélectionné | Choisir un protocole (DSHOT300, DSHOT600…) dans l'onglet Configuration |
-| `ARMSWITCH` | 26 | Switch d'armement en position armée au démarrage | Position neutre du switch arm avant mise sous tension |
+| Flag | Code | Cause | Fix |
+|------|------|-------|-----|
+| `NOGYRO` | 1 | Gyroscope not detected at boot | Hardware fault or bad firmware — reflash, check solder joints |
+| `FAILSAFE` | 2 | Failsafe currently executing | Wait for failsafe to exit, check RX signal |
+| `RXLOSS` / `RX_FAILSAFE` | 3 | Receiver signal missing or invalid | Check radio link, binding, RX UART config |
+| `BADRX` / `NOT_DISARMED` | 4 | RX in recovery AND arm switch already ON | Switch arm switch off before powering on |
+| `BOXFAILSAFE` | 5 | Failsafe switch active on transmitter | Deactivate the failsafe switch |
+| `RUNAWAY` | 6 | Runaway Takeoff Prevention triggered | Disarm, check PIDs and motor config |
+| `CRASH` | 7 | Crash Recovery active | Disarm |
+| `THROTTLE` | 8 | Throttle above `min_check` at arm time | Lower throttle below `min_check` (default ~1050 µs) |
+| `ANGLE` | 9 | FC tilted beyond `small_angle` limit | Place craft flat — default 25°, configurable via `set small_angle` |
+| `BOOTGRACE` | 10 | Arm attempted too soon after power-on | Wait `pwr_on_arm_grace` seconds (default 5 s) |
+| `NOPREARM` | 11 | Prearm switch configured but not active | Activate prearm switch first |
+| `LOAD` | 12 | CPU load too high | Disable features, reduce gyro/PID loop frequency |
+| `CALIB` | 13 | Sensor calibration in progress | Wait for calibration to complete |
+| `CLI` | 14 | CLI session open | Type `exit` in the CLI |
+| `CMS` | 15 | OSD config menu (CMS) open | Exit the CMS menu |
+| `OSD` | 16 | OSD menu active | Exit the OSD menu |
+| `BST` | 16 | Black Sheep Telemetry disarmed | Refer to BST hardware documentation |
+| `MSP` | 17 | Active MSP connection (Betaflight Configurator open) | Disconnect the Configurator |
+| `PARALYZE` | 18 | Paralyze mode active (permanent disarm) | Reboot the FC |
+| `GPS` | 19 | GPS Rescue configured but insufficient satellites | Wait for GPS fix or disable GPS Rescue |
+| `RESCUE_SW` | 20 | GPS Rescue switch active before arming | Deactivate the GPS Rescue switch |
+| `RPMFILTER` / `DSHOT_TELEM` | 21 | RPM filter enabled but DSHOT telemetry invalid | Check `dshot_bidir = ON`, BLHeli_32/AM32 firmware, motor wiring |
+| `REBOOT_REQD` | 22 | Config change requires reboot | Reboot the FC (`reboot` in CLI or power cycle) |
+| `DSHOT_BBANG` | 23 | DSHOT Bitbang failure | Timer conflict — switch to non-Bitbang protocol or check `resource` config |
+| `NO_ACC_CAL` | 24 | Accelerometer never calibrated | Calibrate accelerometer (Configurator Setup tab) or disable dependent modes |
+| `MOTOR_PROTO` | 25 | Motor/ESC protocol not selected | Choose a protocol (DSHOT300, DSHOT600…) in the Configuration tab |
+| `ARMSWITCH` | 26 | Arm switch already in armed position at power-on | Always power on with arm switch in disarmed position |
 
-## Flags les plus courants et leurs pièges
+## Most common flags and their gotchas
 
 ### `RXLOSS` (3)
-Le plus fréquent. Causes typiques :
-- Binding non effectué ou perdu
-- Mauvaise configuration UART (mauvais numéro de port, baud rate)
-- `serialrx_provider` ne correspond pas au protocole RX (ex : CRSF configuré mais récepteur SBUS)
-- Portée dépassée en extérieur
+Most frequent flag. Typical causes:
+- Binding not done or lost
+- Wrong UART config (wrong port number, baud rate)
+- `serialrx_provider` does not match actual RX protocol (e.g. CRSF set but receiver is SBUS)
+- Range exceeded outdoors
 
 ### `MSP` (17)
-Betaflight Configurator maintient une connexion MSP active tant qu'il est ouvert. **Déconnecter le Configurator** (bouton Disconnect) avant d'essayer d'armer. Le flag disparaît immédiatement.
+Betaflight Configurator holds an active MSP connection as long as it is open. **Disconnect the Configurator** (Disconnect button) before trying to arm. Flag clears immediately.
 
 ### `RPMFILTER` (21)
-Nécessite :
+Requires all three:
 1. `set dshot_bidir = ON`
-2. ESC avec firmware supportant la télémétrie bidirectionnelle (BLHeli_32 ≥ 32.7, AM32, Bluejay)
-3. `motor_poles` correctement configuré (typiquement 14 pour un 2204–2307)
+2. ESC firmware supporting bidirectional telemetry (BLHeli_32 ≥ 32.7, AM32, Bluejay)
+3. `motor_poles` correctly set (typically 14 for 2204–2307 motors)
 
 ### `ANGLE` (9)
-Par défaut le FC refuse de s'armer s'il est incliné de plus de 25°. Configurable :
+FC refuses to arm if tilted more than 25° by default. Configurable:
 ```
-set small_angle = 180   # désactive la contrainte d'angle (non recommandé)
-set small_angle = 25    # valeur par défaut
+set small_angle = 180   # disables the angle check (not recommended)
+set small_angle = 25    # default
 ```
 
 ### `ARMSWITCH` (26)
-Sécurité critique : si le switch d'armement est déjà en position armée lors de la mise sous tension, le FC bloque l'armement. Toujours décoller avec le switch en position désarmée.
+Critical safety: if the arm switch is already in the armed position at power-on, the FC blocks arming. Always power on with the arm switch in the disarmed position.
 
 ### `DSHOT_BBANG` (23)
-Le mode Bitbang utilise les timers DMA directement. Conflits fréquents avec :
-- LED strip sur certains FC
-- Certaines configurations `resource` personnalisées
-Solution : désactiver le LED strip ou passer sur DSHOT via hardware timer (si disponible sur le FC).
+Bitbang mode uses DMA timers directly. Common conflicts with:
+- LED strip on certain FCs
+- Custom `resource` remapping
+Fix: disable the LED strip, or switch to hardware-timer DSHOT if available on the FC.

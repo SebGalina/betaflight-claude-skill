@@ -1,79 +1,79 @@
-# MCP Tools — Betaflight FC en direct
+# MCP Tools — Betaflight FC Live Connection
 
-Le serveur MCP Betaflight (`betaflight-mcp`) expose les tools MSP via FastMCP. Quand il est disponible, **toujours préférer la lecture live à demander à l'utilisateur de coller un diff** — c'est plus fiable et plus rapide.
+The Betaflight MCP server (`betaflight-mcp`) exposes MSP tools via FastMCP. When available, **always prefer live reads over asking the user to paste a diff** — it is more reliable and faster.
 
-## Détecter si le MCP est disponible
+## Detecting MCP availability
 
-Tenter un appel à `list_serial_ports` : s'il répond, le serveur est actif. S'il échoue, basculer en mode offline (diff CLI) sans bloquer.
+Attempt a call to `list_serial_ports`. If it responds, the server is active. If it fails, fall back to offline mode (CLI diff) without blocking.
 
-## Catalogue des tools
+## Tool catalogue
 
-### Connexion (toujours en premier)
+### Connection (always first)
 
-| Tool | Quand l'utiliser |
-|------|-----------------|
-| `list_serial_ports` | Déterminer le port avant de connecter |
-| `connect(port, baudrate)` | Ouvrir la session MSP — une seule fois par conversation |
-| `disconnect` | Fin de session ou avant de passer à un autre FC |
+| Tool | When to use |
+|------|-------------|
+| `list_serial_ports` | List available ports before connecting |
+| `connect(port, baudrate)` | Open MSP session — call once per conversation |
+| `disconnect` | End of session or before switching to another FC |
 
-Proposer le port détecté à l'utilisateur, ne pas connecter sans confirmation.
+Propose the detected port to the user; do not connect without their confirmation.
 
-### Lecture de l'état courant
+### Reading current state
 
-Appeler ces tools **avant** de proposer tout changement — ne jamais travailler à l'aveugle :
+Call these tools **before** proposing any change — never work blind:
 
-| Tool | Données retournées | Cas d'usage |
-|------|-------------------|-------------|
-| `get_board_info` | Firmware, variante, MCU, version API | Identifier le FC, vérifier la version BF |
-| `get_fc_status` | Arming flags, cycle time, charge CPU | Diagnostiquer un problème d'armement |
-| `get_pid_values` | P/I/D par axe (roll, pitch, yaw, level) | Avant tout ajustement PID |
-| `get_rates` | rc_rate, expo, superrate, throttle | Avant tout ajustement rates |
-| `get_filter_config` | Gyro lowpass/notch, Dterm, RPM filter | Diagnostiquer oscillations / bruit |
-| `get_pid_advanced` | Feedforward, anti-gravity, TPA, iterm relax, D-Max | Tuning avancé |
-| `get_advanced_config` | Protocole ESC (DSHOT), PID dénominateurs, PWM rate | Vérifier DSHOT, looptime |
-| `get_feature_config` | Features actives (AIRMODE, GPS, LED…) | Vérifier la config features |
-| `get_modes` | AUX switches et plages µs | Diagnostiquer modes RC |
-| `get_sensor_config` | Accéléro, baro, magnéto | Problèmes de capteurs |
+| Tool | Data returned | Use case |
+|------|--------------|----------|
+| `get_board_info` | Firmware, variant, MCU, API version | Identify the FC, verify BF version |
+| `get_fc_status` | Arming flags, cycle time, CPU load | Diagnose arming issues |
+| `get_pid_values` | P/I/D per axis (roll, pitch, yaw, level) | Before any PID adjustment |
+| `get_rates` | rc_rate, expo, superrate, throttle | Before any rates adjustment |
+| `get_filter_config` | Gyro lowpass/notch, Dterm, RPM filter | Diagnose oscillations / noise |
+| `get_pid_advanced` | Feedforward, anti-gravity, TPA, iterm relax, D-Max | Advanced tuning |
+| `get_advanced_config` | ESC protocol (DSHOT), PID denominators, PWM rate | Verify DSHOT, looptime |
+| `get_feature_config` | Active features (AIRMODE, GPS, LED…) | Verify feature config |
+| `get_modes` | AUX switches and µs ranges | Diagnose RC modes |
+| `get_sensor_config` | Accelerometer, baro, magnetometer | Sensor issues |
 
-### Télémétrie temps réel
+### Real-time telemetry
 
-À utiliser pour le diagnostic live, pas pour la configuration :
+Use for live diagnostics only, not for configuration:
 
-| Tool | Données retournées | Cas d'usage |
-|------|-------------------|-------------|
-| `get_imu_data` | Accéléro (g), gyro (°/s), magnéto | Vérifier vibrations au sol |
-| `get_attitude` | Roulis, tangage, cap (°) | Vérifier l'horizon artificiel |
-| `get_battery` | Tension (V), courant (A), mAh, RSSI | Diagnostic batterie |
-| `get_battery_state` | Cellules, capacité, état (OK/WARNING/CRITICAL) | Alerte batterie faible |
-| `get_rc` | Canaux RC (µs) | Vérifier la réception radio |
-| `snapshot_rc_delta(baseline, threshold)` | Canaux qui ont bougé au-delà du seuil | Identifier quel switch/stick est actif |
-| `measure_rc_noise(duration_s, channels)` | Bruit 95e percentile + deadband suggéré | Diagnostiquer bruit RC sticks au repos |
-| `get_motors` | Sorties moteurs (µs) | Vérifier les moteurs au sol (props-off) |
+| Tool | Data returned | Use case |
+|------|--------------|----------|
+| `get_imu_data` | Accelerometer (g), gyro (°/s), magnetometer | Check vibrations on the bench |
+| `get_attitude` | Roll, pitch, heading (°) | Verify artificial horizon |
+| `get_battery` | Voltage (V), current (A), mAh, RSSI | Battery diagnostic |
+| `get_battery_state` | Cells, capacity, state (OK/WARNING/CRITICAL) | Low battery alert |
+| `get_rc` | RC channels (µs) | Verify radio reception |
+| `snapshot_rc_delta(baseline, threshold)` | Channels that moved beyond threshold | Identify which switch/stick is active |
+| `measure_rc_noise(duration_s, channels)` | 95th percentile noise + suggested deadband | Diagnose RC noise with sticks at rest |
+| `get_motors` | Motor outputs (µs) | Check motors on the bench (props-off) |
 
-### Écriture — pattern obligatoire
+### Writing — mandatory pattern
 
-**Toujours suivre cet ordre, sans exception :**
+**Always follow this order, without exception:**
 
 ```
-1. get_pid_values / get_rates / get_filter_config   ← lire l'état actuel
-2. Calculer les nouvelles valeurs
-3. Présenter le résumé à l'utilisateur et demander confirmation explicite
-4. set_pid_values / set_rates                        ← appliquer après confirmation
-5. save_config                                       ← sauvegarder en EEPROM
+1. get_pid_values / get_rates / get_filter_config   ← read current state
+2. Calculate new values
+3. Present summary to user and ask for explicit confirmation
+4. set_pid_values / set_rates                        ← apply after confirmation
+5. save_config                                       ← write to EEPROM
 ```
 
-Ne jamais enchaîner `set_*` + `save_config` sans confirmation intermédiaire. `save_config` redémarre le FC.
+Never chain `set_*` + `save_config` without an explicit confirmation step. `save_config` reboots the FC.
 
-| Tool | Paramètres | Contraintes |
+| Tool | Parameters | Constraints |
 |------|-----------|-------------|
-| `set_pid_values(axis, p, i, d)` | `axis` : roll/pitch/yaw/level — `p`,`i`,`d` : 0–255 | Vérifier les plages dans `references/parameters.md` |
-| `set_rates(rc_rate, rc_expo, roll_rate, …)` | Tous optionnels — seuls les fournis sont mis à jour | Idem |
-| `save_config` | Aucun | Provoque un reboot FC — prévenir l'utilisateur |
-| `reboot_fc` | Aucun | Utiliser seulement si explicitement demandé |
+| `set_pid_values(axis, p, i, d)` | `axis`: roll/pitch/yaw/level — `p`,`i`,`d`: 0–255 | Check ranges in `references/parameters.md` |
+| `set_rates(rc_rate, rc_expo, roll_rate, …)` | All optional — only provided values are updated | Same |
+| `save_config` | None | Reboots the FC — warn the user |
+| `reboot_fc` | None | Use only when explicitly requested |
 
-## Gestion des erreurs
+## Error handling
 
-- Tool retourne `{"error": "..."}` → signaler à l'utilisateur, ne pas continuer l'écriture.
-- `connect` échoue → proposer un autre port de `list_serial_ports`, ou basculer offline.
-- `set_pid_values` retourne `{"errors": [...]}` → afficher les erreurs, ne pas appeler `save_config`.
-- Serveur MCP indisponible → continuer en mode offline (diff CLI) sans bloquer.
+- Tool returns `{"error": "..."}` → report to user, do not continue writing.
+- `connect` fails → propose another port from `list_serial_ports`, or switch to offline.
+- `set_pid_values` returns `{"errors": [...]}` → display validation errors, do not call `save_config`.
+- MCP server unavailable → continue in offline mode (CLI diff) without blocking.

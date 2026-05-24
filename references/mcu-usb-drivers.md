@@ -1,125 +1,125 @@
-# MCU & Drivers USB — Betaflight Flight Controllers
+# MCU & USB Drivers — Betaflight Flight Controllers
 
-Ce guide recense les MCU courants sur les FCs Betaflight, les drivers USB nécessaires par OS, et les procédures pour ne plus galérer à trouver le bon driver.
+This guide covers the MCUs found on Betaflight FCs, the USB drivers required per OS, and step-by-step procedures to stop wasting time hunting for the right driver.
 
-## Identifier le MCU de son FC
+## Identifying your FC's MCU
 
 ### Via Betaflight Configurator
-Onglet **Setup** → ligne `MCU` (affiché après connexion).
+**Setup** tab → `MCU` field (shown after connecting).
 
 ### Via CLI
 ```
 version
 ```
-Exemple de sortie : `# Betaflight / STM32F405 (S405) 4.5.1`  
-Le code entre parenthèses (`S405`, `S7X2`, `H743`…) identifie le MCU.
+Example output: `# Betaflight / STM32F405 (S405) 4.5.1`
+The code in parentheses (`S405`, `S7X2`, `H743`…) identifies the MCU.
 
-### Sans connexion (FC inconnu)
-- Chercher le nom du FC sur [betaflight.com/docs/wiki/boards](https://betaflight.com/docs/wiki/boards)
-- Ou chercher `[nom du FC] betaflight target` sur Google
-
----
-
-## Tableau des MCU courants
-
-| MCU | Fabricant | Fréquence | Présence | Notes |
-|-----|-----------|-----------|----------|-------|
-| STM32F405 | ST Microelectronics | 168 MHz | Très répandu (FCs milieu de gamme) | Référence depuis BF 3.x |
-| STM32F411 | ST Microelectronics | 100 MHz | Répandu (FCs budget STM) | Moins puissant que F405 |
-| STM32F722 | ST Microelectronics | 216 MHz | Répandu (FCs milieu/haut) | F7, meilleure perf filtres |
-| STM32F745 | ST Microelectronics | 216 MHz | Moins courant | F7 avec plus de RAM |
-| STM32H743 | ST Microelectronics | 480 MHz | Haut de gamme | H7, supporte 8kHz + RPM |
-| STM32H750 | ST Microelectronics | 480 MHz | Haut de gamme | H7, flash externe |
-| STM32G473 | ST Microelectronics | 170 MHz | Émergent | G4, bon rapport perf/prix |
-| **AT32F435** | Artery Technology | 288 MHz | **Très répandu (FCs budget chinois)** | Clone STM32 — **driver différent** |
-| AT32F437 | Artery Technology | 288 MHz | Répandu | Variante AT32 avec plus de RAM |
-| APM32F405 | Geehy Semiconductor | 168 MHz | Présent | Compatible STM32F4 |
-| GD32F405 | GigaDevice | 168 MHz | Présent | Compatible STM32F4 |
+### Without a connection (unknown FC)
+- Look up the FC name at [betaflight.com/docs/wiki/boards](https://betaflight.com/docs/wiki/boards)
+- Or search `[FC name] betaflight target` on Google
 
 ---
 
-## Drivers par MCU et par OS
+## Common MCU overview
 
-### STM32 (F4, F7, G4, H7) — Le cas standard
+| MCU | Manufacturer | Clock | Prevalence | Notes |
+|-----|-------------|-------|------------|-------|
+| STM32F405 | ST Microelectronics | 168 MHz | Very common (mid-range FCs) | Reference MCU since BF 3.x |
+| STM32F411 | ST Microelectronics | 100 MHz | Common (budget STM FCs) | Less powerful than F405 |
+| STM32F722 | ST Microelectronics | 216 MHz | Common (mid/high-end) | F7, better filter performance |
+| STM32F745 | ST Microelectronics | 216 MHz | Less common | F7 with more RAM |
+| STM32H743 | ST Microelectronics | 480 MHz | High-end | H7, supports 8kHz + RPM filter |
+| STM32H750 | ST Microelectronics | 480 MHz | High-end | H7 with external flash |
+| STM32G473 | ST Microelectronics | 170 MHz | Emerging | G4, good perf/price ratio |
+| **AT32F435** | Artery Technology | 288 MHz | **Very common (budget Chinese FCs)** | STM32 clone — **different driver** |
+| AT32F437 | Artery Technology | 288 MHz | Common | AT32 variant with more RAM |
+| APM32F405 | Geehy Semiconductor | 168 MHz | Present | STM32F4-compatible clone |
+| GD32F405 | GigaDevice | 168 MHz | Present | STM32F4-compatible clone |
+
+---
+
+## Drivers by MCU and OS
+
+### STM32 (F4, F7, G4, H7) — The standard case
 
 #### Windows
-Deux drivers distincts selon le mode du FC :
+Two separate drivers depending on the FC mode:
 
-**Mode normal (VCP — port COM virtuel) :**
-- Windows 10/11 : auto-détecté dans la majorité des cas (driver CDC ACM intégré)
-- Si absent : installer **STM32 Virtual COM Port Driver** depuis [st.com](https://www.st.com/en/development-tools/stsw-stm32102.html)
-- Ou utiliser **ImpulseRC Driver Fixer** (voir section Outils) — résout automatiquement VCP + DFU
+**Normal mode (VCP — virtual COM port):**
+- Windows 10/11: auto-detected in most cases (built-in CDC ACM driver)
+- If missing: install **STM32 Virtual COM Port Driver** from [st.com](https://www.st.com/en/development-tools/stsw-stm32102.html)
+- Or use **ImpulseRC Driver Fixer** (see Tools section) — fixes VCP + DFU automatically in one click
 
-**Mode DFU (bootloader — pour flasher) :**
-- Le FC apparaît comme `STM32 BOOTLOADER` dans le Gestionnaire de périphériques
-- USB VID/PID : `0x0483` / `0xDF11`
-- Driver requis : **WinUSB** (via Zadig) ou **STM32 DFU** (via ImpulseRC Driver Fixer)
-- Sans ce driver, Betaflight Configurator ne détecte pas le FC en DFU et refuse de flasher
+**DFU mode (bootloader — for flashing):**
+- FC appears as `STM32 BOOTLOADER` in Device Manager
+- USB VID/PID: `0x0483` / `0xDF11`
+- Required driver: **WinUSB** (via Zadig) or **STM32 DFU** (via ImpulseRC Driver Fixer)
+- Without this driver, Betaflight Configurator will not detect the FC in DFU mode
 
-Procédure Zadig pour DFU :
-1. Mettre le FC en mode DFU (bouton BOOT + reset, ou via CLI `bl`)
-2. Ouvrir Zadig → Options → List All Devices
-3. Sélectionner `STM32 BOOTLOADER`
-4. Choisir driver `WinUSB` → Install Driver
+Zadig procedure for DFU:
+1. Put the FC in DFU mode (hold BOOT button while resetting, or type `bl` in CLI)
+2. Open Zadig → Options → List All Devices
+3. Select `STM32 BOOTLOADER`
+4. Choose `WinUSB` → Install Driver
 
 #### macOS
-- Mode VCP : aucun driver requis, port `/dev/tty.usbmodem*` apparaît automatiquement
-- Mode DFU : aucun driver requis, Betaflight Configurator détecte directement
+- VCP mode: no driver needed, port `/dev/tty.usbmodem*` appears automatically
+- DFU mode: no driver needed, Betaflight Configurator detects directly
 
 #### Linux
-- Mode VCP : module `cdc_acm` intégré au noyau, port `/dev/ttyACM0` (ou `ttyACM1`…)
-- Accès sans `sudo` : ajouter l'utilisateur au groupe `dialout`
+- VCP mode: built-in `cdc_acm` kernel module, port `/dev/ttyACM0` (or `ttyACM1`…)
+- Access without `sudo`: add your user to the `dialout` group
   ```bash
   sudo usermod -a -G dialout $USER
-  # puis se déconnecter/reconnecter
+  # then log out and back in
   ```
-- Mode DFU : `dfu-util` + règles udev
+- DFU mode: `dfu-util` + udev rule
   ```bash
   sudo apt install dfu-util
-  # Règle udev pour STM32 DFU :
+  # udev rule for STM32 DFU:
   echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="0483", ATTR{idProduct}=="df11", MODE="0664", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/49-stm32-dfu.rules
   sudo udevadm control --reload-rules
   ```
 
 ---
 
-### AT32F435 / AT32F437 — Le cas qui fait galérer
+### AT32F435 / AT32F437 — The painful case
 
-L'AT32 est fabriqué par **Artery Technology** (华芯微特), une société chinoise. Il est de plus en plus utilisé sur les FCs budget (KayouMini, etc.) car moins cher que STM32 à performances équivalentes. **Son stack USB est différent de STM32** — les drivers STM32 ne fonctionnent pas.
+The AT32 is made by **Artery Technology** (华芯微特), a Chinese company. It is increasingly used on budget FCs (KayouMini, etc.) because it is cheaper than STM32 at equivalent performance. **Its USB stack differs from STM32** — STM32 drivers will not work.
 
 #### USB IDs
 | Mode | VID | PID |
 |------|-----|-----|
-| VCP (mode normal) | `0x2E3C` | `0x5740` (typique) |
-| DFU (bootloader) | `0x2E3C` | `0x4004` (typique) |
+| VCP (normal mode) | `0x2E3C` | `0x5740` (typical) |
+| DFU (bootloader) | `0x2E3C` | `0x4004` (typical) |
 
-> ⚠️ Ces IDs peuvent varier selon la version du firmware AT32. Vérifier dans le Gestionnaire de périphériques Windows ou avec `lsusb` sous Linux.
+> ⚠️ These IDs may vary with the AT32 firmware version. Verify in Windows Device Manager or with `lsusb` on Linux.
 
 #### Windows
 
-**Option A — Driver Artery officiel (recommandé) :**
-1. Aller sur [arterychip.com](https://www.arterychip.com/en/support/tools.jsp)
-2. Chercher "USB VCP Driver" dans la section Tools & Drivers
-3. Installer le package AT32 VCP Driver
-4. Le FC doit apparaître comme port COM dans le Gestionnaire de périphériques
+**Option A — Official Artery driver (recommended):**
+1. Go to [arterychip.com](https://www.arterychip.com/en/support/tools.jsp)
+2. Find "USB VCP Driver" under Tools & Drivers
+3. Install the AT32 VCP Driver package
+4. The FC should appear as a COM port in Device Manager
 
-**Option B — Zadig (si Option A échoue ou indisponible) :**
-1. Télécharger [Zadig 2.9](https://github.com/pbatard/libwdi/releases/download/v1.5.1/zadig-2.9.exe)
-2. FC branché en mode normal → Options → List All Devices
-3. Repérer le device AT32 (VID `2E3C`)
-4. Assigner driver `WinUSB`
-5. Répéter pour le mode DFU si nécessaire
+**Option B — Zadig (if Option A fails or is unavailable):**
+1. Download [Zadig 2.9](https://github.com/pbatard/libwdi/releases/download/v1.5.1/zadig-2.9.exe)
+2. Plug the FC in normal mode → Options → List All Devices
+3. Find the AT32 device (VID `2E3C`)
+4. Assign `WinUSB` driver
+5. Repeat for DFU mode if needed
 
-> ⚠️ **ImpulseRC Driver Fixer ne gère pas AT32** — il est conçu pour STM32 uniquement. Ne pas l'utiliser pour les FCs AT32.
+> ⚠️ **ImpulseRC Driver Fixer does not support AT32** — it is designed for STM32 only. Do not use it for AT32 FCs.
 
 #### macOS
-- Généralement reconnu automatiquement comme port série USB CDC
-- Si absent : vérifier `ls /dev/cu.usbmodem*` après branchement
-- Aucun driver tiers normalement nécessaire
+- Usually auto-detected as a USB CDC serial port
+- If missing: check `ls /dev/cu.usbmodem*` after plugging in
+- No third-party driver normally required
 
 #### Linux
-- Module `cdc_acm` fonctionne
-- Règle udev spécifique AT32 :
+- `cdc_acm` module works
+- AT32-specific udev rule:
   ```bash
   echo 'SUBSYSTEM=="usb", ATTR{idVendor}=="2e3c", MODE="0664", GROUP="plugdev"' | sudo tee /etc/udev/rules.d/49-at32-usb.rules
   sudo udevadm control --reload-rules
@@ -127,39 +127,39 @@ L'AT32 est fabriqué par **Artery Technology** (华芯微特), une société chi
 
 ---
 
-### APM32F405 / GD32F405 — Clones STM32F4
+### APM32F405 / GD32F405 — STM32F4 clones
 
-Ces MCU sont des clones compatibles STM32F4. **Les drivers STM32 fonctionnent** (même VID/PID DFU `0x0483/0xDF11` dans certains cas, ou similaire).
-- Traiter comme un STM32F405 pour les drivers
-- Si ça ne fonctionne pas avec ImpulseRC Driver Fixer, utiliser Zadig + WinUSB
+These MCUs are STM32F4-compatible clones. **STM32 drivers work** (same DFU VID/PID `0x0483/0xDF11` in most cases).
+- Treat as STM32F405 for driver purposes
+- If ImpulseRC Driver Fixer fails, fall back to Zadig + WinUSB
 
 ---
 
-## Outils indispensables
+## Essential tools
 
 ### ImpulseRC Driver Fixer (Windows)
-Le moyen le plus simple de corriger les drivers STM32 sur Windows. Résout en un clic :
-- STM32 VCP (port COM)
-- STM32 DFU (mode bootloader)
+The easiest way to fix STM32 drivers on Windows. One click fixes:
+- STM32 VCP (COM port)
+- STM32 DFU (bootloader mode)
 
-Téléchargement : [impulserc.com/pages/downloads](https://impulserc.com/pages/downloads)
+Download: [impulserc.com/pages/downloads](https://impulserc.com/pages/downloads)
 
-> ⚠️ Ne pas utiliser pour AT32 — conçu pour STM32 uniquement.
+> ⚠️ Do not use for AT32 — designed for STM32 only.
 
 ### Zadig (Windows)
-Outil universel pour assigner manuellement un driver USB (WinUSB, libusb) à n'importe quel périphérique. Indispensable pour AT32 et pour les cas où Driver Fixer échoue.
+Universal tool to manually assign a USB driver (WinUSB, libusb) to any device. Essential for AT32 and for cases where Driver Fixer fails.
 
-Téléchargement : [zadig.akeo.ie](https://zadig.akeo.ie) — [zadig-2.9.exe direct](https://github.com/pbatard/libwdi/releases/download/v1.5.1/zadig-2.9.exe)
+Download: [zadig.akeo.ie](https://zadig.akeo.ie) — [zadig-2.9.exe direct](https://github.com/pbatard/libwdi/releases/download/v1.5.1/zadig-2.9.exe)
 
-Procédure générale :
-1. Brancher le FC (mode normal ou DFU selon le cas)
-2. Ouvrir Zadig → Options → **List All Devices**
-3. Sélectionner le bon device dans la liste
-4. Choisir `WinUSB` comme driver cible
-5. Cliquer **Install Driver** ou **Replace Driver**
+General procedure:
+1. Plug in the FC (normal or DFU mode as needed)
+2. Open Zadig → Options → **List All Devices**
+3. Select the correct device from the list
+4. Choose `WinUSB` as the target driver
+5. Click **Install Driver** or **Replace Driver**
 
 ### dfu-util (Linux / macOS)
-Outil CLI pour flasher via DFU sans passer par le Configurator.
+CLI tool for flashing via DFU without the Configurator.
 ```bash
 # Linux
 sudo apt install dfu-util
@@ -170,40 +170,40 @@ brew install dfu-util
 
 ---
 
-## Diagnostic rapide
+## Quick diagnostic
 
-**Le FC ne s'affiche pas du tout (aucun port COM, aucun device USB) :**
-- Câble USB data (pas charge-only) ?
-- Essayer un autre port USB
-- Vérifier l'alimentation du FC (certains FC nécessitent une batterie pour USB)
-- Windows : ouvrir le Gestionnaire de périphériques → "Autres périphériques" → chercher un device inconnu
+**FC not showing up at all (no COM port, no USB device):**
+- Is the USB cable a data cable (not charge-only)?
+- Try a different USB port
+- Check FC power (some FCs need a battery for USB to work)
+- Windows: open Device Manager → "Other devices" → look for an unknown device
 
-**Le FC s'affiche mais Betaflight Configurator ne le voit pas :**
-- Driver VCP manquant → ImpulseRC Driver Fixer (STM32) ou Zadig (AT32)
-- Linux : permission refusée → `sudo usermod -a -G dialout $USER`
+**FC shows up but Betaflight Configurator does not see it:**
+- Missing VCP driver → ImpulseRC Driver Fixer (STM32) or Zadig (AT32)
+- Linux: permission denied → `sudo usermod -a -G dialout $USER`
 
-**Le FC est détecté mais impossible de flasher (DFU échoue) :**
-- Pas en mode DFU → maintenir BOOT pendant le reset ou utiliser `bl` dans le CLI
-- Driver DFU manquant → Zadig → WinUSB sur `STM32 BOOTLOADER` ou device AT32 DFU
-- AT32 + Windows : s'assurer que Zadig a bien remplacé le driver sur le device DFU (VID `2E3C`)
+**FC detected but flashing fails (DFU error):**
+- Not in DFU mode → hold BOOT during reset or type `bl` in CLI
+- Missing DFU driver → Zadig → WinUSB on `STM32 BOOTLOADER` or AT32 DFU device
+- AT32 + Windows: make sure Zadig replaced the driver on the DFU device (VID `2E3C`)
 
-**"No DFU device found" dans le Configurator :**
-- STM32 : driver WinUSB non installé pour le mode DFU → Zadig
-- AT32 : idem, mais avec VID Artery
+**"No DFU device found" in Configurator:**
+- STM32: WinUSB driver not installed for DFU mode → Zadig
+- AT32: same, but with Artery VID
 
 ---
 
-## FCs connus et leur MCU
+## Known FCs and their MCU
 
-| FC | MCU | Notes driver |
+| FC | MCU | Driver notes |
 |----|-----|-------------|
-| KayouMini | AT32F435G | Driver Artery requis sur Windows |
-| SpeedyBee F405 V3/V4 | STM32F405 | STM32 standard |
-| SpeedyBee F7 | STM32F722 | STM32 standard |
-| Mateksys F405 | STM32F405 | STM32 standard |
-| Mateksys H743 | STM32H743 | STM32 standard |
-| BetaFPV F4 | STM32F411 | STM32 standard |
-| Foxeer F745 | STM32F745 | STM32 standard |
-| Holybro Kakute H7 | STM32H743 | STM32 standard |
+| KayouMini | AT32F435G | Artery driver required on Windows |
+| SpeedyBee F405 V3/V4 | STM32F405 | Standard STM32 |
+| SpeedyBee F7 | STM32F722 | Standard STM32 |
+| Mateksys F405 | STM32F405 | Standard STM32 |
+| Mateksys H743 | STM32H743 | Standard STM32 |
+| BetaFPV F4 | STM32F411 | Standard STM32 |
+| Foxeer F745 | STM32F745 | Standard STM32 |
+| Holybro Kakute H7 | STM32H743 | Standard STM32 |
 
-> Cette liste est non exhaustive. Toujours vérifier via `version` dans le CLI ou la doc du fabricant.
+> Non-exhaustive list. Always verify with `version` in CLI or the manufacturer's documentation.
