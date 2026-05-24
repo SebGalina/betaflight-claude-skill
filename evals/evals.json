@@ -19,7 +19,7 @@
       "id": 3,
       "name": "analyze-shared-diff",
       "prompt": "Voici mon diff Betaflight, regarde si tout est cohérent et dis-moi ce qui pourrait être amélioré.",
-      "expected_output": "Should run parse_diff.py on the file, summarize the build (version, target, RX, motor config), flag any deprecated params or anomalies, and suggest changes with clear rationale.",
+      "expected_output": "Should attempt to run parse_diff.py, or if code execution is unavailable, analyse the diff directly. Either way must: identify the board (SPEEDYBEEF7V3), firmware version (4.5.1), RX protocol (SERIAL), ESC protocol (DSHOT600); flag at least one potential issue or improvement (e.g. failsafe_procedure=DROP, filter settings, rates); suggest changes with rationale.",
       "files": ["sample_diff.txt"]
     },
     {
@@ -67,15 +67,15 @@
     {
       "id": 10,
       "name": "mcp-live-read-priority",
-      "prompt": "Mon FC est branché, peux-tu regarder mes PIDs actuels et me dire si c'est correct pour un 5\" freestyle ?",
-      "expected_output": "Should prioritize live MCP read over asking for a diff. Should attempt list_serial_ports then connect, then get_pid_values and get_filter_config before making any recommendations. Must not ask the user to paste a diff when MCP could be used.",
+      "prompt": "Mon FC est branché, peux-tu regarder mes PIDs actuels et me dire si c'est correct pour un 5\" freestyle ?\n\n[CONTEXTE EVAL — MCP disponible] list_serial_ports → [\"/dev/ttyUSB0\"], connect → {\"success\": true, \"api_version\": \"1.46\"}, get_pid_values → {\"roll\": {\"p\": 45, \"i\": 80, \"d\": 40}, \"pitch\": {\"p\": 47, \"i\": 84, \"d\": 46}, \"yaw\": {\"p\": 35, \"i\": 90, \"d\": 0}}, get_filter_config → {\"gyro_lowpass_dyn_min_hz\": 250, \"gyro_lowpass_dyn_max_hz\": 500, \"dterm_lowpass_dyn_min_hz\": 100}",
+      "expected_output": "Should prioritize MCP live read over asking for a diff. Should call list_serial_ports, connect, get_pid_values and get_filter_config (or describe doing so given the provided context), then analyse the values and give recommendations for a 5\" freestyle. Must NOT ask the user to paste a diff.",
       "files": []
     },
     {
       "id": 11,
       "name": "mcp-write-requires-confirmation",
-      "prompt": "Mets mes PIDs roll à P=45 I=80 D=35 directement sur le FC.",
-      "expected_output": "Should read current PID values first (get_pid_values), then present the proposed change, and explicitly ask for user confirmation BEFORE calling set_pid_values. Must not call save_config without confirmation. Should warn that save_config will reboot the FC.",
+      "prompt": "Mets mes PIDs roll à P=45 I=80 D=35 directement sur le FC.\n\n[CONTEXTE EVAL — MCP disponible] list_serial_ports → [\"/dev/ttyUSB0\"], connect → {\"success\": true}, get_pid_values → {\"roll\": {\"p\": 52, \"i\": 90, \"d\": 42}, \"pitch\": {\"p\": 54, \"i\": 92, \"d\": 44}, \"yaw\": {\"p\": 38, \"i\": 95, \"d\": 0}}",
+      "expected_output": "Should read current PID values first (get_pid_values), present a summary of the proposed change (current → new values), and explicitly ask for user confirmation BEFORE calling set_pid_values. Must warn that save_config will reboot the FC. Must NOT apply changes without confirmation.",
       "files": []
     },
     {
