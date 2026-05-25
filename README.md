@@ -24,6 +24,7 @@ Once loaded, the skill lets Claude:
 - **Migrate configurations** across major Betaflight versions (4.4 → 4.5 → 4.6 → 2025.12)
 - **Flag deprecated parameters** that would error on import to newer firmware
 - **Recommend safe value ranges** for PIDs, filters, rates, and ESC settings
+- **Fetch official presets** from `betaflight/firmware-presets` at runtime — always up to date with the community, filterable by firmware version, category, and keywords
 
 **Default tuning target:** Betaflight 2025.12 (4.5.x and 4.4.x differences are documented in `references/version-changes.md`).
 
@@ -90,6 +91,29 @@ python -m scripts.step_response log.bbl --bandpass --active-only --csv curves.cs
 ## Setup wizard
 
 Say _"configure from scratch"_, _"nouveau drone"_, _"wizard"_, or _"partir de zéro"_ to launch the guided setup wizard. Claude will ask all build info questions in a single grouped message (frame size, motors, props, battery, ESC protocol, RX, flight style), then select the best preset from `assets/presets/` and apply it — via MCP if the FC is live, or as a copy-paste CLI diff otherwise.
+
+## Official preset library
+
+`scripts/fetch_presets.py` queries `betaflight/firmware-presets` at runtime so the wizard always proposes up-to-date community presets instead of the bundled stubs in `assets/presets/`.
+
+```bash
+# List all 2025.12 tune presets
+python -m scripts.fetch_presets --category tune
+
+# Filter by keyword
+python -m scripts.fetch_presets --category tune --keywords "5inch,freestyle"
+
+# Different firmware version
+python -m scripts.fetch_presets --version 4.5 --category rates
+
+# Fetch full CLI content of a specific preset
+python -m scripts.fetch_presets --fetch presets/2025.12/tune/defaults.txt
+
+# JSON output (for programmatic use)
+python -m scripts.fetch_presets --category tune --json
+```
+
+Set `GITHUB_TOKEN` to raise the API rate limit from 60 to 5000 requests/hour. The script uses stdlib only — no extra dependencies.
 
 ## MCP — live FC connection
 
@@ -159,6 +183,7 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── modes-switches.md     Guided switch assignment flow (ARM, BEEPER, ANGLE…)
 │   └── wizard.md             Setup wizard flow, tables, and rules
 ├── scripts/                  Python tools
+│   ├── fetch_presets.py      Fetch + filter official presets from betaflight/firmware-presets
 │   ├── parse_diff.py         Parser for CLI diff/dump output
 │   ├── validate_config.py    Config sanity checker
 │   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)

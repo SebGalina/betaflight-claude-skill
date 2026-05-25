@@ -132,7 +132,9 @@ Flux : lire `get_modes` → demander à l'utilisateur de flipper chaque inter en
 
 Déclencher **uniquement** sur demande explicite de configuration from scratch. Phrases typiques : "j'ai acheté un drone", "nouveau FC", "wizard", "configure from scratch", "partir de zéro", "premier vol". Ne pas déclencher sur les questions de tuning ponctuel ou de dépannage.
 
-Flux en 4 étapes : collecte des infos build (en une seule question groupée) → connexion MCP optionnelle → sélection du preset dans `assets/presets/` → application via MCP ou export diff CLI.
+Flux en 4 étapes : collecte des infos build (en une seule question groupée) → connexion MCP optionnelle → sélection du preset → application via MCP ou export diff CLI.
+
+**Sélection du preset** : toujours essayer `python -m scripts.fetch_presets --version {bf_version} --category tune --keywords {build_class}` en premier pour proposer des presets officiels à jour. Si le réseau est indisponible ou si aucun preset ne correspond, revenir sur `assets/presets/`.
 
 → Flux complet, tableaux et règles : `references/wizard.md`
 

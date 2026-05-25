@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.16] — 2026-05-25
+
+### Added
+- `scripts/fetch_presets.py` — fetches and filters official presets from `betaflight/firmware-presets` at runtime (stdlib only, optional `GITHUB_TOKEN`). Supports `--version`, `--category`, `--keywords`, `--fetch`, `--json`. Recurses into preset subdirectories.
+- Setup wizard in SKILL.md now prefers official presets via `fetch_presets.py` over the bundled `assets/presets/` stubs, falling back to local files when network is unavailable.
+- README: new "Official preset library" section with usage examples; `fetch_presets.py` added to repository structure; new "What it does" bullet.
+
 ## [0.1.15] — 2026-05-25
 
 ### Added
