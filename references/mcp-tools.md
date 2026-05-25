@@ -48,6 +48,8 @@ Use for live diagnostics only, not for configuration:
 | `get_rc` | RC channels (µs) | Verify radio reception |
 | `snapshot_rc_delta(baseline, threshold)` | Channels that moved beyond threshold | Identify which switch/stick is active |
 | `measure_rc_noise(duration_s, channels)` | 95th percentile noise + suggested deadband | Diagnose RC noise with sticks at rest |
+| `detect_rc_mapping(duration_s)` | Channel classification + TAER/AETR convention guess + ambiguous sticks | Passively detect RC channel mapping |
+| `detect_rc_channel_move(baseline, duration_s, threshold)` | Channel with the largest delta from baseline | Identify one axis in the guided mapping protocol |
 | `get_motors` | Motor outputs (µs) | Check motors on the bench (props-off) |
 
 ### Writing — mandatory pattern

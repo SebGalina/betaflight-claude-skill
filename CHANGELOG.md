@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15] — 2026-05-25
+
+### Added
+- RC mapping detection flow in SKILL.md: passive 30-second sampling via `detect_rc_mapping`, guided identification of Aileron/Elevator/Rudder by function name via `detect_rc_channel_move`, comparison with Betaflight's `rcmap` setting, and auto-generated correction snippet if needed.
+- Guided switch assignment flow in SKILL.md: user flips each switch to its active position, Claude detects the AUX channel and µs value and generates the `aux` CLI command. Covers ARM, BEEPER, ANGLE and any other mode. ARM assigned first, always.
+- `references/modes-switches.md` — full sequence, range calculation, conflict check, and UX rules for the switch assignment flow.
+- `detect_rc_mapping` and `detect_rc_channel_move` added to the real-time telemetry table in `references/mcp-tools.md`.
+- README updated: two new bullets in "What it does", RC mapping mention in the MCP section, `modes-switches.md` in repository structure.
+
 ## [0.1.8] — 2026-05-22
 
 ### Added

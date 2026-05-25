@@ -52,6 +52,82 @@ Détection : tenter `list_serial_ports` ; si ça répond, le serveur est actif. 
 
 → Catalogue complet des tools, pattern d'écriture et gestion des erreurs : `references/mcp-tools.md`
 
+## RC Mapping — détection des voies radio
+
+Déclencher quand l'utilisateur demande à détecter ou vérifier le mapping des voies RC avec le FC branché et le serveur MCP disponible.
+
+Le but est de déterminer sur quel canal physique la radio envoie chaque fonction (Aileron, Elevator, Rudder, Throttle), puis de comparer avec le `rcmap` configuré dans Betaflight pour savoir si une correction est nécessaire.
+
+### Mode passif (point de départ)
+
+1. Annoncer la durée : _"Je vais échantillonner votre radio pendant 30 secondes. Bougez tous vos sticks en amplitude complète et activez/désactivez tous les switches que vous souhaitez mapper."_
+2. Appeler `detect_rc_mapping(duration_s=30)`.
+3. Présenter le résultat :
+   - Throttle confirmé (canal + valeur repos)
+   - Switches détectés (2 ou 3 positions)
+   - Convention devinée (`TAER` / `AETR` / inconnue) et sticks ambigus
+
+Si `convention_guess` est `null` **ou** `sticks_ambiguous` contient ≥ 2 éléments → enchaîner sur le mode guidé.
+
+### Mode guidé (identification par fonction)
+
+Demander par **nom de fonction radio** (Aileron, Elevator, Rudder), pas par position physique — l'utilisateur connaît ses commandes, pas leur emplacement supposé.
+
+Séquence pour chaque fonction dans l'ordre Aileron → Elevator → Rudder (Throttle est déjà connu) :
+
+1. Appeler `get_rc` → stocker comme `baseline`.
+2. Annoncer : _"Bougez votre commande **[Aileron / Elevator / Rudder]** en amplitude complète. Vous avez 5 secondes."_
+3. Appeler `detect_rc_channel_move(baseline=baseline, duration_s=5, threshold=300)`.
+4. Si `detected: false` → réessayer une fois. Après 2 échecs : _"Aucun mouvement détecté — vérifiez que votre radio émet (LED TX active, liaison ELRS/CRSF établie)."_ et proposer de recommencer.
+5. Si `detected: true` → enregistrer `{ "aileron": channel }` (ou elevator/rudder selon l'étape).
+6. Passer à la fonction suivante.
+
+**Vérification** : les 4 canaux (T/A/E/R) doivent être distincts. En cas de doublon → signaler et proposer de relancer.
+
+### Comparaison avec le rcmap Betaflight
+
+Une fois les 4 fonctions identifiées, construire la chaîne de mapping détectée (ex. : canal 0=T, 1=A, 2=E, 3=R → `TAER`) et la comparer au `rcmap` courant (lire via `get_advanced_config` ou CLI `rcmap`).
+
+| Situation | Action |
+|-----------|--------|
+| Mapping détecté = `rcmap` courant | ✅ Aucune modification nécessaire |
+| Mapping détecté ≠ `rcmap` courant | Proposer `set rcmap = XXXX` + `save` |
+
+Générer le snippet CLI uniquement si un écart est constaté, et **uniquement après confirmation explicite** de l'utilisateur — `save` redémarre le FC.
+
+### Présentation du résultat final
+
+Afficher un tableau récapitulatif, puis proposer de corréler les switches avec `get_modes` pour identifier lesquels correspondent à ARM, ANGLE, BEEPER, etc. :
+
+```
+Canal 0 — Throttle  (repos 1001 µs)        ← détecté passivement
+Canal 1 — Aileron   (identifié par move)   ← ch1 dans rcmap
+Canal 2 — Elevator  (identifié par move)   ← ch2 dans rcmap
+Canal 3 — Rudder    (identifié par move)   ← ch3 dans rcmap
+Canal 4 — aux1      (switch 2 positions)   ← ARM présumé
+Canal 5 — aux2      (switch 3 positions)
+
+Mapping détecté : TAER
+rcmap actuel    : TAER  ✅ Aucune correction nécessaire
+```
+
+### Règles UX
+
+- Toujours capturer une `baseline` fraîche (`get_rc`) juste avant chaque étape guidée.
+- Toujours annoncer la durée avant d'appeler le tool (`detect_rc_mapping` = 30 s, `detect_rc_channel_move` = 5 s).
+- Maximum 2 tentatives par fonction sur `detected: false`, jamais de boucle infinie.
+- Ne jamais écrire dans le FC sans confirmation explicite — ce flux est en lecture seule jusqu'à la correction `rcmap`.
+
+→ Paramètres et valeurs de retour complets : `references/mcp-tools.md`
+
+## Modes / switches — assignation guidée
+
+Déclencher sur : _"positionne mon inter ARM"_, _"assigne le beeper"_, _"configure mes switches"_, ou en enchaînement naturel après le flux RC Mapping.
+
+Flux : lire `get_modes` → demander à l'utilisateur de flipper chaque inter en position active → détecter le canal et la valeur µs → générer les commandes `aux` → confirmer → `save_config`. Ordre recommandé : ARM en premier, BEEPER en second.
+
+→ Séquence complète, calcul des ranges, gestion des conflits : `references/modes-switches.md`
+
 ## Setup wizard (configuration initiale)
 
 Déclencher **uniquement** sur demande explicite de configuration from scratch. Phrases typiques : "j'ai acheté un drone", "nouveau FC", "wizard", "configure from scratch", "partir de zéro", "premier vol". Ne pas déclencher sur les questions de tuning ponctuel ou de dépannage.

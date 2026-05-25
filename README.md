@@ -19,6 +19,8 @@ Once loaded, the skill lets Claude:
 - **Generate paste-ready CLI configs** for common build classes (5" freestyle, 3" cinewhoop, 7" longrange)
 - **Guide you through a setup wizard** when configuring a new drone from scratch
 - **Read and write a live FC** via the `betaflight-mcp` server (PIDs, filters, rates, ports — without a diff file)
+- **Detect RC channel mapping** — passively sample the radio, identify Throttle/Aileron/Elevator/Rudder by function name, compare against Betaflight's `rcmap` and generate a correction if needed
+- **Assign switches to flight modes** — flip a switch to the active position, Claude detects the channel and µs value and generates the `aux` command (ARM, BEEPER, ANGLE, etc.)
 - **Migrate configurations** across major Betaflight versions (4.4 → 4.5 → 4.6 → 2025.12)
 - **Flag deprecated parameters** that would error on import to newer firmware
 - **Recommend safe value ranges** for PIDs, filters, rates, and ESC settings
@@ -95,6 +97,7 @@ With the `betaflight-mcp` server running, Claude can read and write the FC direc
 
 - **Reads**: PIDs, filter config, rates, ports, motor config, sensor data
 - **Writes**: any `set` parameter, PID values, rates — always with explicit confirmation before `save_config`
+- **RC mapping**: passively samples all RC channels (`detect_rc_mapping`), then identifies each stick axis by function via guided moves (`detect_rc_channel_move`)
 
 Detection is automatic: Claude attempts `list_serial_ports` on startup; if the server responds, it switches to live mode. Otherwise it falls back to offline (diff CLI) mode without blocking.
 
@@ -153,6 +156,7 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── troubleshooting.md    Symptom-to-cause map
 │   ├── version-changes.md    Migration notes between versions
 │   ├── mcp-tools.md          MCP tool catalogue, write pattern, error handling
+│   ├── modes-switches.md     Guided switch assignment flow (ARM, BEEPER, ANGLE…)
 │   └── wizard.md             Setup wizard flow, tables, and rules
 ├── scripts/                  Python tools
 │   ├── parse_diff.py         Parser for CLI diff/dump output
