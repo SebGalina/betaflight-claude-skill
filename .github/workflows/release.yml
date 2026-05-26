@@ -1,0 +1,31 @@
+name: Attach skill zip to release
+
+# Builds the runtime-only skill zip and attaches it to a release when you
+# publish one (via `gh release create` or the GitHub UI). Curated release notes
+# stay manual; only the asset build is automated.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build skill zip
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          python -m scripts.build_skill_zip --version "${TAG#v}"
+
+      - name: Attach zip to release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" dist/*.zip --clobber

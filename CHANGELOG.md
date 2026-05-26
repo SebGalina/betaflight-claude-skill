@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.18] — 2026-05-26
+
+### Added
+- `scripts/build_skill_zip.py` — builds the runtime-only distributable (`dist/betaflight-claude-skill-v<version>.zip`) with a single top-level `betaflight/` folder; excludes dev-only files (evals, CI, eval runner, self-test, build script, fixtures).
+- `.github/workflows/release.yml` — on a published release, builds that zip and attaches it as an asset (curated release notes stay manual).
+
+### Changed
+- README aligned with current repo state: added "arming failures" and "MCU/USB driver" capabilities; structure tree now lists `arming-flags.md`, `mcu-usb-drivers.md`, `selftest.py`, `build_skill_zip.py`, `scripts/test/`, and `.github/workflows/`; setup-wizard section now reflects the official-preset-first selection; install-from-zip step clarified to point at the attached asset; `selftest` added to the manual-run list.
+
 ## [0.1.17] — 2026-05-26
 
 ### Changed

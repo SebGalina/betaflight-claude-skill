@@ -13,6 +13,8 @@ A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and
 Once loaded, the skill lets Claude:
 
 - **Diagnose flight issues** from natural-language descriptions (wobbles, hot motors, oscillations, drift, propwash, jello)
+- **Resolve arming failures** — decode every arming prevention flag (cause, fix, common pitfalls)
+- **Fix connection problems** — MCU/USB driver and COM-port-not-found troubleshooting (Zadig, DFU, ImpulseRC Driver Fixer)
 - **Parse and analyze CLI diff/dump files** you share
 - **Decode blackbox logs** — full binary frame decode with per-field statistics and CSV export
 - **Analyze step response** — closed-loop system identification (setpoint → gyro) via Welch cross-spectral method; rise time, overshoot, settling time, coherence
@@ -44,7 +46,7 @@ git clone https://github.com/SebGalina/betaflight-claude-skill.git .claude/skill
 
 ### claude.ai (web / mobile / desktop)
 
-1. Download `betaflight-claude-skill-v*.zip` from the latest [release](../../releases).
+1. Download the attached `betaflight-claude-skill-v*.zip` asset from the latest [release](../../releases) (the runtime-only payload, not the "Source code" archive).
 2. In Claude: **Settings → Capabilities → Skills → "+ Create skill"** and upload the zip.
 3. The skill triggers automatically when relevant.
 
@@ -90,7 +92,7 @@ python -m scripts.step_response log.bbl --bandpass --active-only --csv curves.cs
 
 ## Setup wizard
 
-Say _"configure from scratch"_, _"nouveau drone"_, _"wizard"_, or _"partir de zéro"_ to launch the guided setup wizard. Claude will ask all build info questions in a single grouped message (frame size, motors, props, battery, ESC protocol, RX, flight style), then select the best preset from `assets/presets/` and apply it — via MCP if the FC is live, or as a copy-paste CLI diff otherwise.
+Say _"configure from scratch"_, _"nouveau drone"_, _"wizard"_, or _"partir de zéro"_ to launch the guided setup wizard. Claude will ask all build info questions in a single grouped message (frame size, motors, props, battery, ESC protocol, RX, flight style), then pick the best preset — preferring the up-to-date official library via `fetch_presets.py`, falling back to the bundled `assets/presets/` stubs offline — and apply it via MCP if the FC is live, or as a copy-paste CLI diff otherwise.
 
 ## Official preset library
 
@@ -173,13 +175,15 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 .
 ├── SKILL.md                  Skill definition + triggering description
 ├── references/               Docs loaded on demand
+│   ├── arming-flags.md       Arming prevention flags: codes, causes, fixes
 │   ├── cli-commands.md       Betaflight CLI command reference (2025.12)
 │   ├── parameters.md         `set` parameters with safe ranges
-│   ├── pid-tuning.md         PID, filter, and rates tuning guide
+│   ├── pid-tuning.md         PID, filter, rates, and step-response tuning guide
 │   ├── configuration.md      Configurator tab navigation + all doc URLs
 │   ├── troubleshooting.md    Symptom-to-cause map
+│   ├── mcu-usb-drivers.md    MCU/USB drivers, DFU, Zadig, COM-port diagnostics
 │   ├── version-changes.md    Migration notes between versions
-│   ├── mcp-tools.md          MCP tool catalogue, write pattern, error handling
+│   ├── mcp-tools.md          MCP tool catalogue, write pattern, RC mapping protocol
 │   ├── modes-switches.md     Guided switch assignment flow (ARM, BEEPER, ANGLE…)
 │   └── wizard.md             Setup wizard flow, tables, and rules
 ├── scripts/                  Python tools
@@ -190,15 +194,19 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── blackbox_decoder.py   Pure-Python blackbox frame decoder
 │   ├── blackbox_presenter.py Human-readable scaling + enum decoding
 │   ├── step_response.py      Closed-loop step response (Welch cross-spectral method)
-│   └── run_evals.py          Automated eval runner (Claude API + judge model)
+│   ├── run_evals.py          Automated eval runner (Claude API + judge model)
+│   ├── selftest.py           Stdlib-only smoke test for the scripts
+│   ├── build_skill_zip.py    Build the runtime-only distributable zip
+│   └── test/                 Local blackbox fixtures (git-ignored; see its README)
 ├── assets/
 │   └── presets/              Starter CLI configs
 │       ├── 5inch-freestyle.txt
 │       ├── cinewhoop-3inch.txt
 │       └── longrange-7inch.txt
-└── evals/                    Test cases
-    ├── evals.json            12 eval cases (diagnosis, wizard, MCP, safety)
-    └── sample_diff.txt       Sample CLI diff used by eval #3
+├── evals/                    Test cases
+│   ├── evals.json            12 eval cases (diagnosis, wizard, MCP, safety)
+│   └── sample_diff.txt       Sample CLI diff used by eval #3
+└── .github/workflows/        CI: attach the skill zip to each published release
 ```
 
 ## Usage examples
@@ -230,6 +238,7 @@ python -m scripts.parse_diff evals/sample_diff.txt
 python -m scripts.validate_config evals/sample_diff.txt
 python -m scripts.analyze_blackbox your_log.bbl --stats
 python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
+python -m scripts.selftest                      # stdlib-only smoke test
 python -m scripts.run_evals --ids 1 2 3
 ```
 
