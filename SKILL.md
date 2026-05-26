@@ -137,7 +137,8 @@ Workflow when a user shares a log:
 
 Both `step_response.py` and `spectral_analysis.py` also accept `--chart`, which emits a ready-to-send payload for the **AntV `mcp-server-chart`** server (`generate_line_chart`) so the curves can be rendered inline when a chart MCP is available (e.g. claude.ai web, where matplotlib `--plot` cannot open a window). → `references/mcp-tools.md` ("Rendering analysis curves via a chart MCP server").
 
-→ Full invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
+→ Full gyro_noise invocation: `scripts/gyro_noise.py --help`
+→ Full step_response invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
 
 ### Presenting rates and human-readable values
 
@@ -239,6 +240,7 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 - `scripts/blackbox_decoder.py` — Pure-Python blackbox decoder (faithful port of the official log-viewer); used by `analyze_blackbox.py`
 - `scripts/blackbox_presenter.py` — Human-readable presentation layer: scales raw values to physical units, decodes enum headers, and computes rates in °/s; used by `analyze_blackbox.py` and `parse_diff.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors
+- `scripts/gyro_noise.py` — Gyro and motor noise spectrum analyser: Welch PSD of `gyroUnfilt` (pre-filter) vs `gyroADC` (post-filter) and motor outputs; reports peak noise frequency and filter attenuation in dB; `--plot` renders an inline matplotlib figure equivalent to the Blackbox Explorer noise tab
 - `scripts/step_response.py` — Closed-loop step response analyser (setpoint → gyro) using Welch's cross-spectral method; rise time, overshoot, settling time, delay, per-axis diagnosis; `--plot` renders an inline matplotlib figure (step response + coherence curves)
 - `scripts/spectral_analysis.py` — Noise spectrum / FFT analyser (gyro or D-term): Welch PSD per axis, automatic peak extraction, harmonic-series grouping (motor noise vs frame resonance vs broadband), PIDToolbox-style diagnosis; `--plot` renders PSD + spectrogram
 - `edgetx/wobble.lua` — EdgeTX custom mixer script: PID-tuning stimulus generator (step / frequency-sweep on roll/pitch/both), used to excite the craft for step-response and spectral measurements (see `edgetx/README.md`)

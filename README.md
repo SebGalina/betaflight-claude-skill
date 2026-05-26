@@ -17,6 +17,7 @@ Once loaded, the skill lets Claude:
 - **Fix connection problems** — MCU/USB driver and COM-port-not-found troubleshooting (Zadig, DFU, ImpulseRC Driver Fixer)
 - **Parse and analyze CLI diff/dump files** you share
 - **Decode blackbox logs** — full binary frame decode with per-field statistics and CSV export
+- **Analyze gyro and motor noise spectra** — Welch PSD of gyroUnfilt vs gyroADC (filter effectiveness) and motor outputs; equivalent to the Blackbox Explorer noise tab
 - **Analyze step response** — closed-loop system identification (setpoint → gyro) via Welch cross-spectral method; rise time, overshoot, settling time, coherence
 - **Generate paste-ready CLI configs** for common build classes (5" freestyle, 3" cinewhoop, 7" longrange)
 - **Guide you through a setup wizard** when configuring a new drone from scratch
@@ -67,6 +68,29 @@ python -m scripts.analyze_blackbox log.bbl --session N  # pick one of several co
 ```
 
 The `--stats` and `--csv` modes require `numpy` and `pandas`; header parsing and `--json` work with the standard library alone.
+
+## Gyro and motor noise analysis
+
+`scripts/gyro_noise.py` computes the power spectral density (Welch method) of the gyro and motor signals — the equivalent of the noise tab in Blackbox Explorer.
+
+```bash
+# Full noise report (gyro + motors, all axes, up to 1 kHz)
+python -m scripts.gyro_noise log.bbl
+
+# Render frequency plot — filtered (solid) vs unfiltered (dashed) gyro + motor spectrum
+python -m scripts.gyro_noise log.bbl --plot
+
+# Single axis, limit to 500 Hz
+python -m scripts.gyro_noise log.bbl --axis roll --max-freq 500
+
+# Export PSD data for external plotting
+python -m scripts.gyro_noise log.bbl --csv spectra.csv
+
+# JSON output
+python -m scripts.gyro_noise log.bbl --json
+```
+
+`gyroUnfilt` is logged by default in Betaflight (controlled by `blackbox_disable_gyrounfilt`, default OFF). When present, the script shows the filter attenuation in dB at the peak noise frequency. If the field is absent the script falls back to the filtered gyro only and warns the user.
 
 ## Step response analysis
 
@@ -214,6 +238,7 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   └── wizard.md             Setup wizard flow, tables, and rules
 ├── scripts/                  Python tools
 │   ├── fetch_presets.py      Fetch + filter official presets from betaflight/firmware-presets
+│   ├── gyro_noise.py         Gyro and motor noise spectrum (Welch PSD, equivalent to Blackbox Explorer noise tab)
 │   ├── parse_diff.py         Parser for CLI diff/dump output
 │   ├── validate_config.py    Config sanity checker
 │   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)
@@ -267,6 +292,7 @@ Once installed, just talk to Claude — no explicit invocation needed:
 python -m scripts.parse_diff evals/sample_diff.txt
 python -m scripts.validate_config evals/sample_diff.txt
 python -m scripts.analyze_blackbox your_log.bbl --stats
+python -m scripts.gyro_noise your_log.bbl --plot
 python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
 python -m scripts.selftest                      # stdlib-only smoke test
 python -m scripts.run_evals --ids 1 2 3
@@ -274,7 +300,7 @@ python -m scripts.run_evals --ids 1 2 3
 
 ## Limitations
 
-- **No gyro noise spectra or filter response visualization.** `analyze_blackbox.py` works in the time domain (decoded values, statistics). For noise floor and filter response plots, use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox. For closed-loop step response and PID diagnosis via cross-spectral analysis, use `scripts/step_response.py`.
+- **No filter response curves.** Theoretical LPF/notch/RPM filter frequency response is not computed. `gyro_noise.py` shows the empirical effect (measured attenuation at peak noise), not the designed curve. For the designed curves use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
 - **Defaults to Betaflight 2025.12 conventions.** Older configs may contain deprecated or renamed parameters; the skill flags them but does not auto-migrate.
 - **No real-time link without the MCP server.** Without `betaflight-mcp`, the skill works on files and descriptions only. With it, Claude can read and write the FC directly (see the MCP section above).
 

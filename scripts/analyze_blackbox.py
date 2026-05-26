@@ -253,7 +253,7 @@ def _print_human(result: dict) -> None:
 
     print(
         "\nNote: filter/PID red flags above are header-level heuristics. "
-        "For FFT / noise analysis use https://blackbox.betaflight.com or PIDtoolbox."
+        "For gyro/motor noise spectra run: python -m scripts.gyro_noise <log.bbl> --plot"
     )
 
 
