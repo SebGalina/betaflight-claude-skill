@@ -25,12 +25,15 @@ betaflight/
 
 ### 1. Test your changes
 
-If you modified a script:
+If you modified a script, run the smoke test from the skill root:
 
 ```bash
-python scripts/parse_diff.py evals/sample_diff.txt
-python scripts/validate_config.py evals/sample_diff.txt
+python -m scripts.selftest
 ```
+
+It checks `parse_diff` + `validate_config` against the committed `evals/sample_diff.txt`,
+and header-parses any `*.bbl` logs you've dropped in `scripts/test/` (see that folder's
+README). It is stdlib-only — no numpy/pandas needed.
 
 If you modified `SKILL.md` or references, run the test prompts in `evals/evals.json` manually against a Claude instance with the skill loaded, and verify the outputs are sensible.
 

@@ -1,6 +1,6 @@
 ---
 name: betaflight
-description: Use this skill whenever the user mentions Betaflight, FPV drone firmware, flight controller configuration, PID tuning, blackbox log analysis, CLI diff/dump files, or asks about parameters like 'set rc_smoothing', 'set dyn_notch', motor/ESC setup, RX configuration, oscillations/wobbles/jello, propwash, filter tuning, or interpreting Betaflight Configurator settings. Also trigger when the user shares a .txt file containing 'diff all', 'dump', 'feature', 'set ' commands, or a .bbl/.bfl blackbox log — these are Betaflight artifacts even if not explicitly named. Use for builds (3" to 10" quads, cinewhoops, tinywhoops, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and troubleshooting flight issues. Do NOT skip this skill just because the user phrases the question casually ("mon drone wobble", "PID help", "config FC"). To configure a new drone from scratch or generate a baseline tune, use the setup wizard: say "configure from scratch", "nouveau drone", "wizard", or "partir de zéro".
+description: Use this skill whenever the user mentions Betaflight, FPV drone firmware, flight controller configuration, PID tuning, blackbox log analysis, CLI diff/dump files, or asks about parameters like 'set rc_smoothing', 'set dyn_notch', motor/ESC setup, RX configuration, oscillations/wobbles/jello, propwash, filter tuning, or interpreting Betaflight Configurator settings. Also trigger when the user shares a .txt file containing 'diff all', 'dump', 'feature', 'set ' commands, or a .bbl/.bfl blackbox log — these are Betaflight artifacts even if not explicitly named. Use for builds (3" to 10" quads, cinewhoops, tinywhoops, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and troubleshooting flight issues. Do NOT skip this skill just because the user phrases the question casually ("mon drone wobble", "PID help", "config FC"). Also covers configuring a new drone from scratch via a guided setup wizard.
 ---
 
 # Betaflight Assistant
@@ -25,7 +25,7 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
 > **Script execution rule**: when the user shares a file, **always execute the relevant script** — never analyse the file manually or answer from memory alone. If the code-execution tool is unavailable, tell the user to enable it (Claude Desktop: conversation settings → Analysis tool) before proceeding.
 
 1. **Identify the artifact type** the user is providing:
-   - **FC branché + serveur MCP disponible** → **lire en direct** via les tools MCP (voir section "Intégration MCP" ci-dessous) — prioritaire sur tout le reste
+   - **FC plugged in + MCP server available** → **read live** via the MCP tools (see "MCP integration" below) — takes priority over everything else
    - **CLI diff/dump** (text file or pasted block) → **execute** `python -m scripts.parse_diff` on it
    - **Blackbox log** (`.bbl`/`.bfl`) → **execute** `python -m scripts.analyze_blackbox` on it (full frame decode on demand)
    - **Description of flight behavior** with no file → diagnostic interview
@@ -37,106 +37,46 @@ When in doubt, apply this skill — under-triggering is a worse failure mode tha
    - Specific `set` parameters → `references/parameters.md` (fallback: `parameters.md`)
    - Flight symptoms → `references/troubleshooting.md` (fallback: `troubleshooting.md`)
    - Arming failures / arming flags → `references/arming-flags.md` (fallback: `arming-flags.md`)
-   - Driver USB / MCU / port COM introuvable → `references/mcu-usb-drivers.md` (fallback: `mcu-usb-drivers.md`)
+   - USB driver / MCU / COM port not found → `references/mcu-usb-drivers.md` (fallback: `mcu-usb-drivers.md`)
    - Version differences → `references/version-changes.md` (fallback: `version-changes.md`)
 
 3. **Diagnose, don't guess.** If symptoms are ambiguous, ask one or two targeted questions (frame size, motor KV, prop, battery, firmware version) before recommending changes.
 
 4. **Recommend changes as CLI snippets** the user can paste directly into Betaflight Configurator's CLI tab. Always wrap them in a code block and end with `save`.
 
-## Intégration MCP — FC en direct
+## MCP integration — live FC
 
-Quand le serveur `betaflight-mcp` est disponible, **toujours préférer la lecture live à demander un diff**. Pattern obligatoire : lire → calculer → confirmer → écrire → `save_config`. Ne jamais appeler `save_config` sans confirmation explicite — il redémarre le FC.
+When the `betaflight-mcp` server is available, **always prefer a live read over asking for a diff**. Mandatory pattern: read → compute → confirm → write → `save_config`. Never call `save_config` without explicit confirmation — it reboots the FC.
 
-Détection : tenter `list_serial_ports` ; si ça répond, le serveur est actif. Sinon, basculer en mode offline (diff CLI) sans bloquer.
+Detection: try `list_serial_ports`; if it responds, the server is active. Otherwise fall back to offline mode (CLI diff) without blocking.
 
-→ Catalogue complet des tools, pattern d'écriture et gestion des erreurs : `references/mcp-tools.md`
+→ Full tool catalogue, write pattern, and error handling: `references/mcp-tools.md`
 
-## RC Mapping — détection des voies radio
+## RC mapping — radio channel detection
 
-Déclencher quand l'utilisateur demande à détecter ou vérifier le mapping des voies RC avec le FC branché et le serveur MCP disponible.
+Trigger when the user asks to detect or verify RC channel mapping, FC plugged in and MCP server available.
 
-Le but est de déterminer sur quel canal physique la radio envoie chaque fonction (Aileron, Elevator, Rudder, Throttle), puis de comparer avec le `rcmap` configuré dans Betaflight pour savoir si une correction est nécessaire.
+Flow: passive sampling (`detect_rc_mapping`, 30 s) → if the convention stays ambiguous, guided identification by function name (Aileron → Elevator → Rudder via `detect_rc_channel_move`) → comparison with the Betaflight `rcmap` → a `set rcmap` correction proposed **only** when there is a mismatch and **after explicit confirmation** (`save` reboots the FC).
 
-### Mode passif (point de départ)
+→ Full protocol (passive/guided modes, UX rules, result presentation, rcmap comparison): `references/mcp-tools.md`
 
-1. Annoncer la durée : _"Je vais échantillonner votre radio pendant 30 secondes. Bougez tous vos sticks en amplitude complète et activez/désactivez tous les switches que vous souhaitez mapper."_
-2. Appeler `detect_rc_mapping(duration_s=30)`.
-3. Présenter le résultat :
-   - Throttle confirmé (canal + valeur repos)
-   - Switches détectés (2 ou 3 positions)
-   - Convention devinée (`TAER` / `AETR` / inconnue) et sticks ambigus
+## Modes / switches — guided assignment
 
-Si `convention_guess` est `null` **ou** `sticks_ambiguous` contient ≥ 2 éléments → enchaîner sur le mode guidé.
+Trigger on: _"positionne mon inter ARM"_, _"assigne le beeper"_, _"configure mes switches"_, or as a natural follow-up after the RC mapping flow.
 
-### Mode guidé (identification par fonction)
+Flow: read `get_modes` → ask the user to flip each switch to its active position → detect the channel and µs value → generate the `aux` commands → confirm → `save_config`. Recommended order: ARM first, BEEPER second.
 
-Demander par **nom de fonction radio** (Aileron, Elevator, Rudder), pas par position physique — l'utilisateur connaît ses commandes, pas leur emplacement supposé.
+→ Full sequence, range calculation, conflict handling: `references/modes-switches.md`
 
-Séquence pour chaque fonction dans l'ordre Aileron → Elevator → Rudder (Throttle est déjà connu) :
+## Setup wizard (initial configuration)
 
-1. Appeler `get_rc` → stocker comme `baseline`.
-2. Annoncer : _"Bougez votre commande **[Aileron / Elevator / Rudder]** en amplitude complète. Vous avez 5 secondes."_
-3. Appeler `detect_rc_channel_move(baseline=baseline, duration_s=5, threshold=300)`.
-4. Si `detected: false` → réessayer une fois. Après 2 échecs : _"Aucun mouvement détecté — vérifiez que votre radio émet (LED TX active, liaison ELRS/CRSF établie)."_ et proposer de recommencer.
-5. Si `detected: true` → enregistrer `{ "aileron": channel }` (ou elevator/rudder selon l'étape).
-6. Passer à la fonction suivante.
+Trigger **only** on an explicit request to configure from scratch. Typical phrases: "j'ai acheté un drone", "nouveau FC", "wizard", "configure from scratch", "partir de zéro", "premier vol". Do not trigger on one-off tuning or troubleshooting questions.
 
-**Vérification** : les 4 canaux (T/A/E/R) doivent être distincts. En cas de doublon → signaler et proposer de relancer.
+4-step flow: collect build info (in a single grouped question) → optional MCP connection → preset selection → apply via MCP or export a CLI diff.
 
-### Comparaison avec le rcmap Betaflight
+**Preset selection**: always try `python -m scripts.fetch_presets --version {bf_version} --category tune --keywords {build_class}` first to offer up-to-date official presets. If the network is unavailable or no preset matches, fall back to `assets/presets/`.
 
-Une fois les 4 fonctions identifiées, construire la chaîne de mapping détectée (ex. : canal 0=T, 1=A, 2=E, 3=R → `TAER`) et la comparer au `rcmap` courant (lire via `get_advanced_config` ou CLI `rcmap`).
-
-| Situation | Action |
-|-----------|--------|
-| Mapping détecté = `rcmap` courant | ✅ Aucune modification nécessaire |
-| Mapping détecté ≠ `rcmap` courant | Proposer `set rcmap = XXXX` + `save` |
-
-Générer le snippet CLI uniquement si un écart est constaté, et **uniquement après confirmation explicite** de l'utilisateur — `save` redémarre le FC.
-
-### Présentation du résultat final
-
-Afficher un tableau récapitulatif, puis proposer de corréler les switches avec `get_modes` pour identifier lesquels correspondent à ARM, ANGLE, BEEPER, etc. :
-
-```
-Canal 0 — Throttle  (repos 1001 µs)        ← détecté passivement
-Canal 1 — Aileron   (identifié par move)   ← ch1 dans rcmap
-Canal 2 — Elevator  (identifié par move)   ← ch2 dans rcmap
-Canal 3 — Rudder    (identifié par move)   ← ch3 dans rcmap
-Canal 4 — aux1      (switch 2 positions)   ← ARM présumé
-Canal 5 — aux2      (switch 3 positions)
-
-Mapping détecté : TAER
-rcmap actuel    : TAER  ✅ Aucune correction nécessaire
-```
-
-### Règles UX
-
-- Toujours capturer une `baseline` fraîche (`get_rc`) juste avant chaque étape guidée.
-- Toujours annoncer la durée avant d'appeler le tool (`detect_rc_mapping` = 30 s, `detect_rc_channel_move` = 5 s).
-- Maximum 2 tentatives par fonction sur `detected: false`, jamais de boucle infinie.
-- Ne jamais écrire dans le FC sans confirmation explicite — ce flux est en lecture seule jusqu'à la correction `rcmap`.
-
-→ Paramètres et valeurs de retour complets : `references/mcp-tools.md`
-
-## Modes / switches — assignation guidée
-
-Déclencher sur : _"positionne mon inter ARM"_, _"assigne le beeper"_, _"configure mes switches"_, ou en enchaînement naturel après le flux RC Mapping.
-
-Flux : lire `get_modes` → demander à l'utilisateur de flipper chaque inter en position active → détecter le canal et la valeur µs → générer les commandes `aux` → confirmer → `save_config`. Ordre recommandé : ARM en premier, BEEPER en second.
-
-→ Séquence complète, calcul des ranges, gestion des conflits : `references/modes-switches.md`
-
-## Setup wizard (configuration initiale)
-
-Déclencher **uniquement** sur demande explicite de configuration from scratch. Phrases typiques : "j'ai acheté un drone", "nouveau FC", "wizard", "configure from scratch", "partir de zéro", "premier vol". Ne pas déclencher sur les questions de tuning ponctuel ou de dépannage.
-
-Flux en 4 étapes : collecte des infos build (en une seule question groupée) → connexion MCP optionnelle → sélection du preset → application via MCP ou export diff CLI.
-
-**Sélection du preset** : toujours essayer `python -m scripts.fetch_presets --version {bf_version} --category tune --keywords {build_class}` en premier pour proposer des presets officiels à jour. Si le réseau est indisponible ou si aucun preset ne correspond, revenir sur `assets/presets/`.
-
-→ Flux complet, tableaux et règles : `references/wizard.md`
+→ Full flow, tables, and rules: `references/wizard.md`
 
 ## Output conventions
 
@@ -192,29 +132,9 @@ Workflow when a user shares a log:
 2. **Decode with `--stats`** if you need actual flight data — gyro/motor/eRPM ranges, accelerometer (Z ≈ acc_1G at hover), throttle/setpoint behaviour, and corrupt-frame counts.
 3. **Export with `--csv`** when the user wants the raw decoded series for a spreadsheet or external tool.
 4. This is a **time-domain** analyzer — it does not do FFT/noise spectra. For that, still point users to https://blackbox.betaflight.com or PIDtoolbox.
-5. For **step response analysis**, use `python -m scripts.step_response`.
+5. For **step response analysis**, use `python -m scripts.step_response <log.bbl> --bandpass --active-only` (recommended flags). Closed-loop identification: rise time, overshoot, settling time, coherence. Low coherence on freestyle/racing logs is normal — reliable results need a dedicated identification flight.
 
-```
-python -m scripts.step_response <log.bbl>                        # text report, all axes
-python -m scripts.step_response <log.bbl> --axis roll            # single axis
-python -m scripts.step_response <log.bbl> --bandpass --active-only   # best coherence (recommended)
-python -m scripts.step_response <log.bbl> --bandpass --active-only --axis yaw
-python -m scripts.step_response <log.bbl> --plot                 # render step response + coherence figure
-python -m scripts.step_response <log.bbl> --bandpass --active-only --plot  # best quality + figure
-python -m scripts.step_response <log.bbl> --json                 # machine-readable
-python -m scripts.step_response <log.bbl> --csv curves.csv       # export response curves
-python -m scripts.step_response <log.bbl> --nperseg 2048         # larger Welch window
-python -m scripts.step_response <decoded.csv>                    # from analyze_blackbox --csv
-```
-
-**Signal quality flags** (improve coherence on noisy logs):
-- `--bandpass` — Butterworth 4th-order 5–80 Hz before Welch; removes DC drift and motor-frequency noise
-- `--active-only` — keeps only frames around fast stick inputs; drops hovering noise and propwash
-- `--nperseg N` — override Welch window size (default: auto ~64 ms, power of 2)
-
-**Always use `--bandpass --active-only`** for identification flights with deliberate step inputs. On a typical log this raises coherence from ~0.1 to 0.65–0.80+.
-
-**Step response — coherence warning**: the script reports a coherence value per axis (5–80 Hz band). Coherence < 0.5 on a freestyle or racing log is **normal and expected** — it means the gyro is driven by many things other than the setpoint (vibrations, propwash, non-linear PID terms like D_max and anti-gravity). The metrics are still indicative but not precise. For reliable coherence (> 0.7) the user needs a **dedicated identification flight**: deliberate full-stick → neutral → full-stick inputs, repeated 3–5 times per axis, with no other maneuvers. Always mention this when presenting step response results from a freestyle or racing log.
+→ Full invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
 
 ### Presenting rates and human-readable values
 
@@ -301,10 +221,10 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 
 ## Bundled resources
 
-- `references/arming-flags.md` — Tous les arming prevention flags : codes, causes, solutions, pièges courants
-- `references/mcu-usb-drivers.md` — MCU courants (STM32, AT32, APM32, GD32), drivers VCP et DFU par OS, Zadig, ImpulseRC Driver Fixer, diagnostic port COM introuvable
-- `references/mcp-tools.md` — Catalogue complet des tools MCP, pattern écriture, gestion erreurs
-- `references/wizard.md` — Flux détaillé du wizard de configuration initiale
+- `references/arming-flags.md` — All arming prevention flags: codes, causes, fixes, common pitfalls
+- `references/mcu-usb-drivers.md` — Common MCUs (STM32, AT32, APM32, GD32), VCP and DFU drivers per OS, Zadig, ImpulseRC Driver Fixer, COM-port-not-found diagnostics
+- `references/mcp-tools.md` — Full MCP tool catalogue, write pattern, error handling, RC mapping protocol
+- `references/wizard.md` — Detailed initial-configuration wizard flow
 - `references/cli-commands.md` — Betaflight CLI command reference
 - `references/parameters.md` — Most common `set` parameters with safe ranges
 - `references/pid-tuning.md` — PID, filter, and rates tuning guide

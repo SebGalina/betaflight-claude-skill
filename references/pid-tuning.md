@@ -282,3 +282,27 @@ These are starting points, not final values. Always fly with stock PIDs first an
 | Desyncs at low throttle | Dynamic idle not configured → enable bidirDSHOT + dynamic_idle_min_rpm |
 | Jello in video, FPV looks clean | Soft camera mount — not a tune issue |
 | Jello in FPV AND camera | Real vibration → mechanical issue, balance props, check motor bell |
+
+## Step response analysis (`scripts/step_response.py`)
+
+Closed-loop system identification (setpoint → gyro) via Welch's cross-spectral method: rise time, overshoot, settling time, delay, per-axis diagnosis.
+
+```
+python -m scripts.step_response <log.bbl>                        # text report, all axes
+python -m scripts.step_response <log.bbl> --axis roll            # single axis
+python -m scripts.step_response <log.bbl> --bandpass --active-only   # best coherence (recommended)
+python -m scripts.step_response <log.bbl> --plot                 # step response + coherence figure
+python -m scripts.step_response <log.bbl> --json                 # machine-readable
+python -m scripts.step_response <log.bbl> --csv curves.csv       # export response curves
+python -m scripts.step_response <log.bbl> --nperseg 2048         # larger Welch window
+python -m scripts.step_response <decoded.csv>                    # from analyze_blackbox --csv
+```
+
+**Signal quality flags** (improve coherence on noisy logs):
+- `--bandpass` — Butterworth 4th-order 5–80 Hz before Welch; removes DC drift and motor-frequency noise
+- `--active-only` — keeps only frames around fast stick inputs; drops hovering noise and propwash
+- `--nperseg N` — override Welch window size (default: auto ~64 ms, power of 2)
+
+**Always use `--bandpass --active-only`** for identification flights with deliberate step inputs. On a typical log this raises coherence from ~0.1 to 0.65–0.80+.
+
+**Coherence warning**: the script reports a coherence value per axis (5–80 Hz band). Coherence < 0.5 on a freestyle or racing log is **normal and expected** — the gyro is driven by many things other than the setpoint (vibrations, propwash, non-linear PID terms like D_max and anti-gravity). The metrics stay indicative but not precise. For reliable coherence (> 0.7) the user needs a **dedicated identification flight**: deliberate full-stick → neutral → full-stick inputs, repeated 3–5 times per axis, with no other maneuvers. Always mention this when presenting step response results from a freestyle or racing log.

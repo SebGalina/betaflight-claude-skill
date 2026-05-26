@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17] — 2026-05-26
+
+### Changed
+- SKILL.md trimmed from 320 to 240 lines (progressive disclosure): the full RC mapping protocol moved to `references/mcp-tools.md` and the step-response flags + coherence warning moved to `references/pid-tuning.md`, leaving concise trigger + pointer sections in SKILL.md.
+- Frontmatter `description` shortened from 1003 to 912 chars (the 1024 cap was nearly hit) by removing the wizard sentence that duplicated the body; wizard triggers remain in the `## Setup wizard` section.
+- Harmonized SKILL.md and `references/mcp-tools.md` to English for model-facing instructions; French trigger phrases (e.g. `"nouveau drone"`, `"positionne mon inter ARM"`) kept verbatim as recognition cues.
+
+### Added
+- `scripts/selftest.py` — stdlib-only smoke test: checks `parse_diff` + `validate_config` against the committed `evals/sample_diff.txt`, and header-parses any `*.bbl` logs present in `scripts/test/` (SKIPs gracefully when absent, so a fresh clone passes).
+- `scripts/test/README.md` — documents the (intentionally git-ignored) blackbox fixture convention.
+- CONTRIBUTING.md test step now points to `python -m scripts.selftest`; `.gitignore` comment clarifies why `*.bbl` fixtures stay local.
+
 ## [0.1.16] — 2026-05-25
 
 ### Added

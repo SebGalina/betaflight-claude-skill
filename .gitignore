@@ -37,6 +37,8 @@ evals/iteration-*/
 evals/feedback.json
 
 # Local testing files (not part of the skill)
+# Blackbox logs are large binaries kept out of git on purpose; drop them in
+# scripts/test/ to feed `python -m scripts.selftest` (see scripts/test/README.md).
 test_*.txt
 *.bbl
 *.bfl
