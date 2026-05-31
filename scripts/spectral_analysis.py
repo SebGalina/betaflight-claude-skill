@@ -309,6 +309,34 @@ def analyse(df, fs, signal_name, axes_filter=None, fmin=DEFAULT_FMIN,
 
 
 # ---------------------------------------------------------------------------
+# Chart payload for the AntV mcp-server-chart (generate_line_chart)
+# ---------------------------------------------------------------------------
+
+def _chart_payload(output: dict, file_name: str, max_pts: int = 300) -> dict:
+    """Build a generate_line_chart payload (AntV mcp-server-chart).
+
+    One series per axis via the `group` field; the spectrum is downsampled to
+    at most `max_pts` points per axis to keep the payload light.
+    """
+    data = []
+    for axis, d in output["axes"].items():
+        spec = d.get("spectrum", [])
+        step = max(1, len(spec) // max_pts)
+        for f, db in spec[::step]:
+            data.append({"time": f"{f:.1f}", "value": round(float(db), 1), "group": axis})
+    return {
+        "mcp_tool": "generate_line_chart",
+        "note": "Pass `arguments` to the AntV mcp-server-chart generate_line_chart tool.",
+        "arguments": {
+            "title": f"Noise spectrum ({output['signal']}) — {file_name}",
+            "axisXTitle": "Frequency (Hz)",
+            "axisYTitle": "PSD (dB)",
+            "data": data,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
@@ -399,6 +427,8 @@ def main():
     ap.add_argument("--nperseg", type=int, default=None, metavar="N",
                     help="Welch window size in samples (default: auto ~4 Hz resolution)")
     ap.add_argument("--json", action="store_true", help="Output as JSON")
+    ap.add_argument("--chart", action="store_true",
+                    help="Emit a generate_line_chart payload for the AntV mcp-server-chart")
     ap.add_argument("--csv", metavar="OUT", help="Write spectra to CSV (axis, freq_hz, level_db)")
     ap.add_argument("--plot", action="store_true",
                     help="Render PSD + spectrogram figure (requires matplotlib)")
@@ -431,7 +461,9 @@ def main():
             _plot_results(df, fs, args.signal, output, args.fmin,
                           min(args.fmax, nyq * 0.98), title_suffix=f" — {path.name}")
 
-        if args.json:
+        if args.chart:
+            print(json.dumps(_chart_payload(output, path.name), indent=2))
+        elif args.json:
             print(json.dumps(output, indent=2))
         elif args.csv:
             rows = [

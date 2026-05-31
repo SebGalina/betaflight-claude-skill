@@ -135,6 +135,8 @@ Workflow when a user shares a log:
 5. For **step response analysis**, use `python -m scripts.step_response <log.bbl> --bandpass --active-only` (recommended flags). Closed-loop identification: rise time, overshoot, settling time, coherence. Low coherence on freestyle/racing logs is normal — reliable results need a dedicated identification flight.
 6. For **noise / FFT analysis**, use `python -m scripts.spectral_analysis <log.bbl>` (gyro) or `--signal dterm` (the D-term is the main noise path to the ESCs). It computes the Welch PSD per axis, auto-extracts frequency peaks, groups them into **harmonic series**, and diagnoses the source: a clean f0 + 2f0 + 3f0 family → **motor noise** (RPM filter); an isolated narrow peak → **frame resonance** (dynamic notch); a raised featureless floor → **broadband** (low-pass, never a notch). `--plot` adds a spectrogram. Pairs naturally with the EdgeTX **wobble mode** stimulus in `edgetx/` (inject → log → measure).
 
+Both `step_response.py` and `spectral_analysis.py` also accept `--chart`, which emits a ready-to-send payload for the **AntV `mcp-server-chart`** server (`generate_line_chart`) so the curves can be rendered inline when a chart MCP is available (e.g. claude.ai web, where matplotlib `--plot` cannot open a window). → `references/mcp-tools.md` ("Rendering analysis curves via a chart MCP server").
+
 → Full invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
 
 ### Presenting rates and human-readable values

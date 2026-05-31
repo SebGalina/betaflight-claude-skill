@@ -145,3 +145,40 @@ Current rcmap    : TAER  ✅ No correction needed
 - Always announce the duration before calling the tool (`detect_rc_mapping` = 30 s, `detect_rc_channel_move` = 5 s).
 - At most 2 attempts per function on `detected: false`, never an infinite loop.
 - Never write to the FC without explicit confirmation — this flow is read-only up to the `rcmap` correction.
+
+---
+
+## Rendering analysis curves via a chart MCP server (AntV)
+
+`blackbox.betaflight.com` and PIDtoolbox cannot be driven by MCP. To **display**
+the step-response and noise-spectrum curves inline (e.g. in claude.ai web, where
+the scripts' matplotlib `--plot` cannot open a window), delegate the rendering to
+a generic chart MCP server. Recommended: **AntV `mcp-server-chart`** (free, no API
+key, posts data so it handles long FFT series).
+
+Both analysis scripts emit a ready-to-send payload with `--chart`:
+
+```bash
+python -m scripts.spectral_analysis <log.bbl> --signal dterm --chart
+python -m scripts.step_response  <log.bbl> --bandpass --active-only --chart
+```
+
+The payload wraps the AntV `generate_line_chart` arguments (one series per axis
+via the `group` field), already downsampled:
+
+```json
+{
+  "mcp_tool": "generate_line_chart",
+  "arguments": {
+    "title": "Noise spectrum (dterm) — log.bbl",
+    "axisXTitle": "Frequency (Hz)",
+    "axisYTitle": "PSD (dB)",
+    "data": [ {"time": "47.0", "value": 12.3, "group": "roll"}, … ]
+  }
+}
+```
+
+Workflow: run the script with `--chart`, then call the chart MCP server's
+`generate_line_chart` tool with the `arguments` object verbatim; show the
+returned image/URL to the user. If no chart MCP is configured, fall back to the
+text/JSON report or tell the user to open the log at https://blackbox.betaflight.com.

@@ -331,6 +331,31 @@ def analyse(
 
 
 # ---------------------------------------------------------------------------
+# Chart payload for the AntV mcp-server-chart (generate_line_chart)
+# ---------------------------------------------------------------------------
+
+def _chart_payload(output: dict, file_name: str) -> dict:
+    """Build a generate_line_chart payload (AntV mcp-server-chart).
+
+    One series per axis via the `group` field, from the step-response curve.
+    """
+    data = []
+    for axis, d in output["axes"].items():
+        for t, v in d.get("step_response", []):
+            data.append({"time": f"{t:.2f}", "value": round(float(v), 4), "group": axis})
+    return {
+        "mcp_tool": "generate_line_chart",
+        "note": "Pass `arguments` to the AntV mcp-server-chart generate_line_chart tool.",
+        "arguments": {
+            "title": f"Step response — {file_name}",
+            "axisXTitle": "Time (ms)",
+            "axisYTitle": "Normalized response (1.0 = steady state)",
+            "data": data,
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Plotting
 # ---------------------------------------------------------------------------
 
@@ -409,6 +434,8 @@ def main():
     ap.add_argument("--session", type=int, default=None, metavar="N",
                     help="Session index for multi-session logs")
     ap.add_argument("--json", action="store_true", help="Output as JSON")
+    ap.add_argument("--chart", action="store_true",
+                    help="Emit a generate_line_chart payload for the AntV mcp-server-chart")
     ap.add_argument("--csv", metavar="OUT", help="Write step response curves to CSV")
     # Signal quality flags
     ap.add_argument("--bandpass", action="store_true",
@@ -453,7 +480,9 @@ def main():
             flags_str = f"  [{', '.join(flags)}]" if flags else ""
             _plot_results(output, title_suffix=f" — {path.name}{flags_str}")
 
-        if args.json:
+        if args.chart:
+            print(json.dumps(_chart_payload(output, path.name), indent=2))
+        elif args.json:
             print(json.dumps(output, indent=2))
         elif args.csv:
             rows = [

@@ -110,6 +110,8 @@ python -m scripts.spectral_analysis log.bbl --csv spectra.csv
 
 Diagnosis: a clean `f0 + 2·f0 + 3·f0` family → **motor noise** (RPM filter); an isolated narrow peak → **frame resonance** (dynamic notch); a raised featureless floor → **broadband** noise (low-pass, never a notch).
 
+Both this and the step-response script accept `--chart`, which emits a `generate_line_chart` payload for the free [AntV `mcp-server-chart`](https://github.com/antvis/mcp-server-chart) MCP server — so the curves render inline where matplotlib `--plot` can't open a window (e.g. claude.ai web). See `references/mcp-tools.md`.
+
 ## Wobble mode (EdgeTX stimulus)
 
 `edgetx/wobble.lua` is an EdgeTX custom mixer script that injects a controlled, repeatable disturbance (step or frequency-sweep) on roll/pitch/both, on top of normal stick control. Use it to excite the craft on demand, then measure the response with the step-response and spectral scripts above (inject → log → measure). Setup and safety: `edgetx/README.md`.

@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20] — 2026-05-31
+
+### Added
+- `--chart` mode on `scripts/spectral_analysis.py` and `scripts/step_response.py`: emits a ready-to-send `generate_line_chart` payload (one series per axis via `group`, downsampled) for the free AntV `mcp-server-chart` MCP server, so the curves render inline where matplotlib `--plot` cannot open a window (e.g. claude.ai web). Documented in `references/mcp-tools.md`.
+
 ## [0.1.19] — 2026-05-31
 
 ### Added
