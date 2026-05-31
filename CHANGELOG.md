@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.19] — 2026-05-31
+
+### Added
+- `scripts/spectral_analysis.py` — noise spectrum / FFT analyser (gyro or D-term). Welch PSD per axis, automatic frequency-peak extraction, harmonic-series grouping, and PIDToolbox-style diagnosis (motor harmonics → RPM filter; isolated peak → dynamic notch; broadband floor → low-pass). Reuses the existing decoder (`.bbl`/CSV), with `--signal`, `--axis`, `--session`, `--fmin/--fmax`, `--json`, `--csv`, and a `--plot` PSD + spectrogram figure.
+- `edgetx/wobble.lua` + `edgetx/README.md` — EdgeTX custom mixer script that injects a controlled step or frequency-sweep disturbance on roll/pitch/both (adjustable amplitude, switch-armed) on top of normal stick control, to excite the craft for step-response and spectral measurements. Includes Radiomaster Pocket install steps, flight procedure, and safety notes.
+
+### Changed
+- SKILL.md and README updated: the blackbox section no longer says "no FFT — use PIDtoolbox"; it now points at `spectral_analysis.py`, and both list the new script and the EdgeTX wobble tool.
+- `scripts/build_skill_zip.py` now bundles the `edgetx/` folder into the runtime skill.
+
 ## [0.1.18] — 2026-05-26
 
 ### Added

@@ -90,6 +90,30 @@ python -m scripts.step_response log.bbl --bandpass --active-only --csv curves.cs
 
 **For reliable results** (coherence > 0.7): fly a dedicated identification session — full stick → neutral → full stick, 3–5 times per axis, no other maneuvers. Then run with `--bandpass --active-only`.
 
+## Noise spectrum / FFT analysis
+
+`scripts/spectral_analysis.py` computes the power spectral density (Welch's method) of the gyro or D-term per axis — PIDToolbox-style — then automatically extracts the frequency peaks and groups them into harmonic series so you know *what* the noise is and *which* filter to reach for.
+
+```bash
+# Gyro noise spectrum, all axes (peaks + harmonics + diagnosis)
+python -m scripts.spectral_analysis log.bbl
+
+# D-term spectrum — the main noise path to the ESCs
+python -m scripts.spectral_analysis log.bbl --signal dterm
+
+# PSD + spectrogram figure, single axis, JSON, or export the spectra
+python -m scripts.spectral_analysis log.bbl --plot
+python -m scripts.spectral_analysis log.bbl --axis roll
+python -m scripts.spectral_analysis log.bbl --json
+python -m scripts.spectral_analysis log.bbl --csv spectra.csv
+```
+
+Diagnosis: a clean `f0 + 2·f0 + 3·f0` family → **motor noise** (RPM filter); an isolated narrow peak → **frame resonance** (dynamic notch); a raised featureless floor → **broadband** noise (low-pass, never a notch).
+
+## Wobble mode (EdgeTX stimulus)
+
+`edgetx/wobble.lua` is an EdgeTX custom mixer script that injects a controlled, repeatable disturbance (step or frequency-sweep) on roll/pitch/both, on top of normal stick control. Use it to excite the craft on demand, then measure the response with the step-response and spectral scripts above (inject → log → measure). Setup and safety: `edgetx/README.md`.
+
 ## Setup wizard
 
 Say _"configure from scratch"_, _"nouveau drone"_, _"wizard"_, or _"partir de zéro"_ to launch the guided setup wizard. Claude will ask all build info questions in a single grouped message (frame size, motors, props, battery, ESC protocol, RX, flight style), then pick the best preset — preferring the up-to-date official library via `fetch_presets.py`, falling back to the bundled `assets/presets/` stubs offline — and apply it via MCP if the FC is live, or as a copy-paste CLI diff otherwise.
@@ -194,10 +218,14 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── blackbox_decoder.py   Pure-Python blackbox frame decoder
 │   ├── blackbox_presenter.py Human-readable scaling + enum decoding
 │   ├── step_response.py      Closed-loop step response (Welch cross-spectral method)
+│   ├── spectral_analysis.py  Noise spectrum / FFT peaks + harmonics (gyro / D-term)
 │   ├── run_evals.py          Automated eval runner (Claude API + judge model)
 │   ├── selftest.py           Stdlib-only smoke test for the scripts
 │   ├── build_skill_zip.py    Build the runtime-only distributable zip
 │   └── test/                 Local blackbox fixtures (git-ignored; see its README)
+├── edgetx/                   EdgeTX radio scripts
+│   ├── wobble.lua            PID-tuning stimulus generator (step / sweep)
+│   └── README.md             Install (Radiomaster Pocket) + flight procedure
 ├── assets/
 │   └── presets/              Starter CLI configs
 │       ├── 5inch-freestyle.txt

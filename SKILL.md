@@ -131,8 +131,9 @@ Workflow when a user shares a log:
 1. **Run headers first** (default mode) — read off firmware/target/craft, looptime, motor protocol, bidir DSHOT, and the embedded tune red flags.
 2. **Decode with `--stats`** if you need actual flight data — gyro/motor/eRPM ranges, accelerometer (Z ≈ acc_1G at hover), throttle/setpoint behaviour, and corrupt-frame counts.
 3. **Export with `--csv`** when the user wants the raw decoded series for a spreadsheet or external tool.
-4. This is a **time-domain** analyzer — it does not do FFT/noise spectra. For that, still point users to https://blackbox.betaflight.com or PIDtoolbox.
+4. `analyze_blackbox.py` itself is a **time-domain** analyzer. For **FFT / noise spectra**, run `python -m scripts.spectral_analysis <log.bbl>` (see below); for anything it doesn't cover, point users to https://blackbox.betaflight.com or PIDtoolbox.
 5. For **step response analysis**, use `python -m scripts.step_response <log.bbl> --bandpass --active-only` (recommended flags). Closed-loop identification: rise time, overshoot, settling time, coherence. Low coherence on freestyle/racing logs is normal — reliable results need a dedicated identification flight.
+6. For **noise / FFT analysis**, use `python -m scripts.spectral_analysis <log.bbl>` (gyro) or `--signal dterm` (the D-term is the main noise path to the ESCs). It computes the Welch PSD per axis, auto-extracts frequency peaks, groups them into **harmonic series**, and diagnoses the source: a clean f0 + 2f0 + 3f0 family → **motor noise** (RPM filter); an isolated narrow peak → **frame resonance** (dynamic notch); a raised featureless floor → **broadband** (low-pass, never a notch). `--plot` adds a spectrogram. Pairs naturally with the EdgeTX **wobble mode** stimulus in `edgetx/` (inject → log → measure).
 
 → Full invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
 
@@ -237,4 +238,6 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 - `scripts/blackbox_presenter.py` — Human-readable presentation layer: scales raw values to physical units, decodes enum headers, and computes rates in °/s; used by `analyze_blackbox.py` and `parse_diff.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors
 - `scripts/step_response.py` — Closed-loop step response analyser (setpoint → gyro) using Welch's cross-spectral method; rise time, overshoot, settling time, delay, per-axis diagnosis; `--plot` renders an inline matplotlib figure (step response + coherence curves)
+- `scripts/spectral_analysis.py` — Noise spectrum / FFT analyser (gyro or D-term): Welch PSD per axis, automatic peak extraction, harmonic-series grouping (motor noise vs frame resonance vs broadband), PIDToolbox-style diagnosis; `--plot` renders PSD + spectrogram
+- `edgetx/wobble.lua` — EdgeTX custom mixer script: PID-tuning stimulus generator (step / frequency-sweep on roll/pitch/both), used to excite the craft for step-response and spectral measurements (see `edgetx/README.md`)
 - `assets/presets/` — Starter CLI snippets per build class (3", 5" freestyle, 7" longrange, cinewhoop)

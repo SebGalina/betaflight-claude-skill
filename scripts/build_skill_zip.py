@@ -25,7 +25,7 @@ SKILL_DIRNAME = "betaflight"
 
 # Files/dirs (relative to repo root) that make up the runtime skill.
 INCLUDE_FILES = ["SKILL.md", "requirements.txt", "README.md", "LICENSE.txt"]
-INCLUDE_DIRS = ["references", "assets"]
+INCLUDE_DIRS = ["references", "assets", "edgetx"]
 
 # scripts/ is included selectively: runtime helpers only.
 SCRIPT_EXCLUDE = {
