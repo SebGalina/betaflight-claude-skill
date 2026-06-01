@@ -1,103 +1,186 @@
--- wobble.lua  --  EdgeTX custom mixer script (Radiomaster Pocket & others)
+-- wobble.lua  --  EdgeTX MIXER script  (SCRIPTS/MIXES/)
+-- v4 — screen-configurable PID stimulus generator
 --
--- PID-tuning stimulus generator. Injects a controlled disturbance on roll
--- and/or pitch so the response can be measured in Betaflight Blackbox
--- (step-response, filter/resonance analysis, PIDtoolbox, PID-Analyzer...).
+-- Configure via the companion wobble_cfg.lua (SCRIPTS/TOOLS/).
+-- ONE physical switch required (ARM); a SECOND input (FCArm) is
+-- optional and only needed if you want the lockout safety.
 --
 -- Waveforms:
---   STEP  : bipolar square wave (repeated step input)  -> step-response tests
---   SWEEP : linear frequency chirp (sine)              -> resonance / phase tests
+--   STEP : bipolar square wave  → step-response tests
+--   SWEEP: linear sine chirp   → filter / resonance tests
 --
--- IMPORTANT: the output is the DISTURBANCE ONLY. You add it on top of your
--- normal stick mixes (CH Aileron += Rwob, CH Elevator += Pwob), so you keep
--- full manual control at all times. Flip the Arm switch off to stop instantly.
+-- Axis modes:
+--   SEQ  : seq_t s roll, then seq_t s pitch              (2 phases)
+--   SEQ+ : seq_t s roll, then pitch, then both           (3 phases)
+--   ROLL : roll only
+--   PITCH: pitch only
+--   BOTH : both simultaneously
 --
--- SAFETY: this makes the quad oscillate on purpose. Start with a SMALL
--- amplitude (10-15%), test at safe altitude, props clear of people, finger
--- ready on the disarm. Increase amplitude only if the response is too weak.
+-- Repeat modes (SEQ / SEQ+ only):
+--   ONCE : one full cycle then stops + plays end tone
+--   LOOP : repeats until ARM is flipped off
+--
+-- Safety lockout (requires FCArm input wired):
+--   When ON, once a run has happened, the script refuses to re-launch
+--   until the FC has been disarmed. A short low buzz signals the block.
+--
+-- Audio cues:
+--   axis switch         : short beep (660 Hz / 150 ms)
+--   end of test (ONCE)  : ascending double beep (880 + 1320 Hz)
+--   blocked by lockout  : low buzz  (200 Hz double)
+--
+-- Config is reloaded automatically on every ARM rising edge.
 
--- ===================== USER CONFIG =====================
-local STEP_HZ  = 2.0    -- square-wave frequency, steps per second (1.5-3 Hz typical)
-local SWEEP_F0 = 0.5    -- chirp start frequency (Hz)
-local SWEEP_F1 = 12.0   -- chirp end frequency (Hz)
-local SWEEP_T  = 20.0   -- chirp duration (s) before it repeats
-local AMP_CAP  = 35     -- hard safety cap on amplitude (% of full stick)
-local AMP_DEF  = 15     -- default amplitude (%)
--- =======================================================
+local CFG_FILE = "/SCRIPTS/MIXES/wobble.cfg"
+local AMP_CAP  = 35     -- hard safety ceiling regardless of config
 
-local phase = 0.0   -- accumulated chirp phase (rad), kept continuous
-local etime = 0.0   -- seconds elapsed since arming
-local lastT = 0     -- last getTime() tick (10 ms units)
-local armed = false
+-- Defaults (used when no config file exists yet)
+local cfg = {
+  mode=0, amp=15, step_hz=20, f0=5, f1=12, sweep_t=20,
+  axis=0, seq_t=15, repeat_mode=0, safety=1,
+}
+
+local phase        = 0.0
+local etime        = 0.0
+local lastT        = 0
+local armed        = false
+local test_done    = false   -- set when ONCE cycle completes; cleared on ARM low
+local last_phase   = 0       -- last SEQ phase index (0/1/2); for beep detection
+local lockout      = false   -- safety lockout (must disarm FC to clear)
+local block_beeped = false   -- ensures the lockout buzz plays once per attempt
+
+local function read_cfg()
+  local f = io.open(CFG_FILE, "r")
+  if not f then return end
+  local buf, chunk = "", io.read(f, 512)
+  while chunk and #chunk > 0 do buf = buf .. chunk; chunk = io.read(f, 512) end
+  io.close(f)
+  for line in buf:gmatch("[^\n\r]+") do
+    local k, v = line:match("^(%w+)=(%S+)")
+    if k and v and cfg[k] ~= nil then cfg[k] = tonumber(v) or cfg[k] end
+  end
+end
 
 local function init()
   lastT = getTime()
+  read_cfg()
 end
 
--- Inputs are passed in the order declared in the return table below.
---   arm   : SOURCE  (a switch)  -> >0 = active, <=0 = off
---   axis  : SOURCE  (3-pos sw)  -> low = roll, mid = both, high = pitch
---   mode  : SOURCE  (2-pos sw)  -> <=0 = STEP, >0 = SWEEP
---   amp   : VALUE   (0..AMP_CAP)-> amplitude in % of full stick
-local function run(arm, axis, mode, amp)
+local function run(arm, fc_arm)
   local now = getTime()
-  local dt  = (now - lastT) / 100.0   -- seconds since last call
+  local dt  = (now - lastT) / 100.0    -- seconds (getTime ticks = 10 ms)
   lastT = now
-  if dt < 0 or dt > 0.5 then dt = 0 end   -- guard against time jumps / pauses
+  if dt < 0 or dt > 0.5 then dt = 0 end
 
-  -- Arm handling: reset cleanly on the rising edge so each run starts at t=0.
+  fc_arm = fc_arm or 0
+  local fc_armed = (fc_arm > 0)
+
+  -- FC disarmed → clear the safety lockout
+  if not fc_armed then lockout = false end
+
   if arm > 0 then
-    if not armed then armed = true; etime = 0.0; phase = 0.0 end
+    if not armed then
+      -- rising edge of wobble switch
+      if cfg.safety == 1 and lockout then
+        if not block_beeped then
+          playTone(200, 300, 100)
+          playTone(200, 300,   0)
+          block_beeped = true
+        end
+        return 0, 0
+      end
+      block_beeped = false
+      armed       = true
+      etime       = 0.0
+      phase       = 0.0
+      test_done   = false
+      last_phase  = 0
+      read_cfg()
+    end
+    if test_done then return 0, 0 end
     etime = etime + dt
   else
-    armed = false
+    -- wobble switch off
+    if armed and etime > 0.1 and cfg.safety == 1 and fc_armed then
+      lockout = true       -- engage lockout: was running, stopped, FC still armed
+    end
+    armed        = false
+    test_done    = false
+    block_beeped = false
     return 0, 0
   end
 
-  -- Amplitude -> output scale (channel full range is +/-1024).
-  if amp < 0 then amp = 0 end
-  if amp > AMP_CAP then amp = AMP_CAP end
-  local A = (amp / 100.0) * 1024.0
+  local amp = math.max(0, math.min(cfg.amp, AMP_CAP))
+  local A   = (amp / 100.0) * 1024.0
 
-  -- Waveform value w in [-1, 1].
+  -- Waveform -----------------------------------------------------------------
   local w
-  if mode > 0 then
-    -- SWEEP: instantaneous freq sweeps F0->F1 over SWEEP_T, then repeats.
-    -- Phase is integrated incrementally so the sine stays continuous
-    -- (only the frequency resets, no amplitude glitch).
-    local f = SWEEP_F0 + (SWEEP_F1 - SWEEP_F0) * ((etime % SWEEP_T) / SWEEP_T)
+  if cfg.mode == 1 then
+    -- SWEEP: linear chirp F0→F1 over sweep_t, then repeats
+    local f0 = cfg.f0 / 10.0
+    local st = math.max(cfg.sweep_t, 1)
+    local f  = f0 + (cfg.f1 - f0) * ((etime % st) / st)
     phase = phase + 2.0 * math.pi * f * dt
-    if phase > 1e6 then phase = phase % (2.0 * math.pi) end  -- keep it bounded
+    if phase > 62832 then phase = phase - 62832 end
     w = math.sin(phase)
   else
-    -- STEP: bipolar square wave at STEP_HZ.
-    local half = 0.5 / STEP_HZ
-    w = (math.floor(etime / half) % 2 == 0) and 1 or -1
+    -- STEP: bipolar square wave
+    local hz = math.max(cfg.step_hz / 10.0, 0.1)
+    w = (math.floor(etime * hz * 2) % 2 == 0) and 1.0 or -1.0
   end
 
+  -- Axis routing -------------------------------------------------------------
   local out = A * w
-
-  -- Axis routing from the 3-position switch.
   local r, p = 0, 0
-  if axis < -300 then
-    r = out                 -- switch LOW  -> roll only
-  elseif axis > 300 then
-    p = out                 -- switch HIGH -> pitch only
-  else
-    r = out; p = out        -- switch MID  -> both axes
+  local ax = cfg.axis
+  local n_phases = 0
+  if ax == 0 then n_phases = 2 end   -- SEQ  : roll, pitch
+  if ax == 1 then n_phases = 3 end   -- SEQ+ : roll, pitch, both
+
+  if n_phases > 0 then
+    -- Sequenced mode
+    local st    = math.max(cfg.seq_t, 1)
+    local cycle = n_phases * st
+    local t     = (cfg.repeat_mode == 0) and etime or (etime % cycle)
+    local cur_phase = math.floor(t / st)
+    if cur_phase >= n_phases then cur_phase = n_phases - 1 end
+
+    -- Beep on phase change
+    if cur_phase ~= last_phase then
+      last_phase = cur_phase
+      playTone(660, 150, 0)
+    end
+
+    -- ONCE: stop after one full cycle, play end tone, engage lockout
+    if cfg.repeat_mode == 0 and etime >= cycle then
+      test_done = true
+      if cfg.safety == 1 and fc_armed then lockout = true end
+      playTone(880,  300, 50)
+      playTone(1320, 600,  0)
+      return 0, 0
+    end
+
+    if     cur_phase == 0 then r = out
+    elseif cur_phase == 1 then p = out
+    else                       r = out; p = out   -- phase 2 (SEQ+): both axes
+    end
+  elseif ax == 2 then       -- ROLL
+    r = out
+  elseif ax == 3 then       -- PITCH
+    p = out
+  elseif ax == 4 then       -- BOTH
+    r = out; p = out
   end
 
   return r, p
 end
 
 return {
-  init  = init,
-  run   = run,
-  input = {
-    { "Arm",  SOURCE },
-    { "Axis", SOURCE },
-    { "Mode", SOURCE },
-    { "Amp",  VALUE, 0, AMP_CAP, AMP_DEF },
+  init   = init,
+  run    = run,
+  input  = {
+    { "Arm",   SOURCE },    -- wobble trigger
+    { "FCArm", SOURCE },    -- FC arm state (optional, enables safety lockout)
   },
   output = { "Rwob", "Pwob" },
 }

@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.21] — 2026-06-01
+
+### Added
+- `edgetx/wobble_cfg.lua` — companion EdgeTX TOOL script with an on-screen
+  configuration menu (scrollable list, edit/save) for every wobble parameter.
+  Persists to `/SCRIPTS/MIXES/wobble.cfg`; `wobble.lua` picks it up on every
+  ARM rising edge.
+- `wobble.lua`: new **SEQ+** axis mode (15 s roll → 15 s pitch → 15 s both
+  = 45 s total) on top of the existing SEQ (30 s).
+- `wobble.lua`: **ONCE / LOOP** repeat selector. ONCE auto-stops after one
+  full cycle and plays an ascending end tone; LOOP keeps cycling until ARM
+  is flipped off. Axis transitions get a short 660 Hz beep.
+- `wobble.lua`: optional **FC-arm lockout safety**. Wire the new `FCArm`
+  input to your FC arm source and turn `Safety = ON` in the config — the
+  script then refuses to re-launch until the FC has been disarmed, forcing
+  a land + disarm cycle between iterations (low-buzz audio cue on blocked
+  attempt). Leave `FCArm` unassigned (or `Safety = OFF`) to disable.
+
+### Changed
+- `wobble.lua` rewritten to read all parameters from `wobble.cfg`. Only one
+  physical switch is now mandatory (the wobble ARM trigger); the Axis / Mode
+  / Amp switch inputs from v0.1.19 are gone.
+- `edgetx/README.md` updated for the two-file install, the new modes, the
+  safety lockout, the audio cues, and the iterative tuning workflow.
+
 ## [0.1.20] — 2026-05-31
 
 ### Added
