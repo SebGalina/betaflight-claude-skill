@@ -7,30 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.1.21] — 2026-06-01
+## [0.2.0] — 2026-06-01
 
 ### Added
-- `edgetx/wobble_cfg.lua` — companion EdgeTX TOOL script with an on-screen
-  configuration menu (scrollable list, edit/save) for every wobble parameter.
-  Persists to `/SCRIPTS/MIXES/wobble.cfg`; `wobble.lua` picks it up on every
-  ARM rising edge.
-- `wobble.lua`: new **SEQ+** axis mode (15 s roll → 15 s pitch → 15 s both
-  = 45 s total) on top of the existing SEQ (30 s).
-- `wobble.lua`: **ONCE / LOOP** repeat selector. ONCE auto-stops after one
-  full cycle and plays an ascending end tone; LOOP keeps cycling until ARM
-  is flipped off. Axis transitions get a short 660 Hz beep.
-- `wobble.lua`: optional **FC-arm lockout safety**. Wire the new `FCArm`
-  input to your FC arm source and turn `Safety = ON` in the config — the
-  script then refuses to re-launch until the FC has been disarmed, forcing
-  a land + disarm cycle between iterations (low-buzz audio cue on blocked
-  attempt). Leave `FCArm` unassigned (or `Safety = OFF`) to disable.
-
-### Changed
-- `wobble.lua` rewritten to read all parameters from `wobble.cfg`. Only one
-  physical switch is now mandatory (the wobble ARM trigger); the Axis / Mode
-  / Amp switch inputs from v0.1.19 are gone.
-- `edgetx/README.md` updated for the two-file install, the new modes, the
-  safety lockout, the audio cues, and the iterative tuning workflow.
+- `scripts/chirp_analysis.py` — closed-loop chirp frequency-response analyser for
+  logs recorded with Betaflight's chirp generator (`debug_mode = CHIRP`). Computes
+  the per-axis FRF `H(f) = Pxy/Pxx` via Welch's cross-spectral method → **Bode**
+  (gain dB, phase deg) plus **coherence**, segmenting by the active chirp axis
+  (`debug[1]`) and using the logged excitation (`debug[3]`) as the input reference
+  (configurable via `--input-col`, with a `setpoint[i]` fallback). Diagnosis is
+  gated to where coherence > 0.8; also builds a **throttle × frequency resonance
+  map**. `--html` writes a single self-contained report (vanilla-JS `<canvas>`
+  renderer, no external dependencies, opens offline); `--json` is machine-readable.
+- `references/chirp-tuning.md` — chirp frequency-response tuning method: why chirp
+  over step, the `debug_mode = CHIRP` field mapping, the `chirp_*` CLI parameters,
+  lead-lag excitation shaping, how to read the Bode/coherence plots, and the flight
+  protocol (including: never enable CHIRP on the ground, betaflight/betaflight#15012).
 
 ## [0.1.20] — 2026-05-31
 
@@ -41,11 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 - `scripts/spectral_analysis.py` — noise spectrum / FFT analyser (gyro or D-term). Welch PSD per axis, automatic frequency-peak extraction, harmonic-series grouping, and PIDToolbox-style diagnosis (motor harmonics → RPM filter; isolated peak → dynamic notch; broadband floor → low-pass). Reuses the existing decoder (`.bbl`/CSV), with `--signal`, `--axis`, `--session`, `--fmin/--fmax`, `--json`, `--csv`, and a `--plot` PSD + spectrogram figure.
-- `edgetx/wobble.lua` + `edgetx/README.md` — EdgeTX custom mixer script that injects a controlled step or frequency-sweep disturbance on roll/pitch/both (adjustable amplitude, switch-armed) on top of normal stick control, to excite the craft for step-response and spectral measurements. Includes Radiomaster Pocket install steps, flight procedure, and safety notes.
 
 ### Changed
-- SKILL.md and README updated: the blackbox section no longer says "no FFT — use PIDtoolbox"; it now points at `spectral_analysis.py`, and both list the new script and the EdgeTX wobble tool.
-- `scripts/build_skill_zip.py` now bundles the `edgetx/` folder into the runtime skill.
+- SKILL.md and README updated: the blackbox section no longer says "no FFT — use PIDtoolbox"; it now points at `spectral_analysis.py`, and both list the new script.
 
 ## [0.1.18] — 2026-05-26
 

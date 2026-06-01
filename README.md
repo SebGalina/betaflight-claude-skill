@@ -136,9 +136,15 @@ Diagnosis: a clean `f0 + 2·f0 + 3·f0` family → **motor noise** (RPM filter);
 
 Both this and the step-response script accept `--chart`, which emits a `generate_line_chart` payload for the free [AntV `mcp-server-chart`](https://github.com/antvis/mcp-server-chart) MCP server — so the curves render inline where matplotlib `--plot` can't open a window (e.g. claude.ai web). See `references/mcp-tools.md`.
 
-## Wobble mode (EdgeTX stimulus)
+## Chirp analysis (Bode + coherence)
 
-`edgetx/wobble.lua` is an EdgeTX custom mixer script that injects a controlled, repeatable disturbance (step or frequency-sweep) on roll/pitch/both, on top of normal stick control. Use it to excite the craft on demand, then measure the response with the step-response and spectral scripts above (inject → log → measure). Setup and safety: `edgetx/README.md`.
+`scripts/chirp_analysis.py` turns a closed-loop **chirp** log into a frequency-response diagnosis. Betaflight's built-in chirp generator (`debug_mode = CHIRP`) adds a swept sine straight onto `currentPidSetpoint`, cycling roll → pitch → yaw, and logs the excitation in the `debug[]` channels. Generate the chirp on the FC (`set debug_mode = CHIRP`, tune `chirp_*` params), fly the dedicated identification flight, then:
+
+```
+python -m scripts.chirp_analysis <log.bbl> --html report.html
+```
+
+You get a self-contained HTML report (no external dependencies, opens offline) with a Bode plot per axis — **gain (dB)**, **phase (deg)** with the −180° marker, and **coherence (0–1)** with the 0.8 threshold band — plus a **throttle × frequency resonance heatmap**. Low-coherence regions are greyed out. Use `--json` for machine-readable output. Reads gain/phase shape directly: a bump at 40–60 Hz → P/D overshoot, a narrow peak → frame resonance (dynamic notch), a high-frequency roll-off → low-pass filtering. See `references/chirp-tuning.md`.
 
 ## Setup wizard
 
@@ -229,6 +235,7 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── cli-commands.md       Betaflight CLI command reference (2025.12)
 │   ├── parameters.md         `set` parameters with safe ranges
 │   ├── pid-tuning.md         PID, filter, rates, and step-response tuning guide
+│   ├── chirp-tuning.md       Chirp frequency-response method (Bode + coherence)
 │   ├── configuration.md      Configurator tab navigation + all doc URLs
 │   ├── troubleshooting.md    Symptom-to-cause map
 │   ├── mcu-usb-drivers.md    MCU/USB drivers, DFU, Zadig, COM-port diagnostics
@@ -246,13 +253,11 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── blackbox_presenter.py Human-readable scaling + enum decoding
 │   ├── step_response.py      Closed-loop step response (Welch cross-spectral method)
 │   ├── spectral_analysis.py  Noise spectrum / FFT peaks + harmonics (gyro / D-term)
+│   ├── chirp_analysis.py     Chirp Bode (gain/phase/coherence) + throttle resonance map
 │   ├── run_evals.py          Automated eval runner (Claude API + judge model)
 │   ├── selftest.py           Stdlib-only smoke test for the scripts
 │   ├── build_skill_zip.py    Build the runtime-only distributable zip
 │   └── test/                 Local blackbox fixtures (git-ignored; see its README)
-├── edgetx/                   EdgeTX radio scripts
-│   ├── wobble.lua            PID-tuning stimulus generator (step / sweep)
-│   └── README.md             Install (Radiomaster Pocket) + flight procedure
 ├── assets/
 │   └── presets/              Starter CLI configs
 │       ├── 5inch-freestyle.txt
