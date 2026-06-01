@@ -24,6 +24,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   lead-lag excitation shaping, how to read the Bode/coherence plots, and the flight
   protocol (including: never enable CHIRP on the ground, betaflight/betaflight#15012).
 
+### Changed
+- README and SKILL.md: added the chirp frequency-response workflow to the capability
+  list and the blackbox analysis steps, with a `get chirp` availability note, and
+  dropped the AntV `mcp-server-chart` `--chart` promotion from both (the flag itself
+  remains in the code).
+
 ## [0.1.20] — 2026-05-31
 
 ### Added

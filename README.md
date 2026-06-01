@@ -19,6 +19,7 @@ Once loaded, the skill lets Claude:
 - **Decode blackbox logs** — full binary frame decode with per-field statistics and CSV export
 - **Analyze gyro and motor noise spectra** — Welch PSD of gyroUnfilt vs gyroADC (filter effectiveness) and motor outputs; equivalent to the Blackbox Explorer noise tab
 - **Analyze step response** — closed-loop system identification (setpoint → gyro) via Welch cross-spectral method; rise time, overshoot, settling time, coherence
+- **Analyze closed-loop frequency response** — Bode (gain/phase) + per-frequency coherence from a Betaflight chirp log (`debug_mode = CHIRP`); self-contained HTML report with a throttle × frequency resonance map
 - **Generate paste-ready CLI configs** for common build classes (5" freestyle, 3" cinewhoop, 7" longrange)
 - **Guide you through a setup wizard** when configuring a new drone from scratch
 - **Read and write a live FC** via the `betaflight-mcp` server (PIDs, filters, rates, ports — without a diff file)
@@ -134,8 +135,6 @@ python -m scripts.spectral_analysis log.bbl --csv spectra.csv
 
 Diagnosis: a clean `f0 + 2·f0 + 3·f0` family → **motor noise** (RPM filter); an isolated narrow peak → **frame resonance** (dynamic notch); a raised featureless floor → **broadband** noise (low-pass, never a notch).
 
-Both this and the step-response script accept `--chart`, which emits a `generate_line_chart` payload for the free [AntV `mcp-server-chart`](https://github.com/antvis/mcp-server-chart) MCP server — so the curves render inline where matplotlib `--plot` can't open a window (e.g. claude.ai web). See `references/mcp-tools.md`.
-
 ## Chirp analysis (Bode + coherence)
 
 `scripts/chirp_analysis.py` turns a closed-loop **chirp** log into a frequency-response diagnosis. Betaflight's built-in chirp generator (`debug_mode = CHIRP`) adds a swept sine straight onto `currentPidSetpoint`, cycling roll → pitch → yaw, and logs the excitation in the `debug[]` channels. Generate the chirp on the FC (`set debug_mode = CHIRP`, tune `chirp_*` params), fly the dedicated identification flight, then:
@@ -145,6 +144,8 @@ python -m scripts.chirp_analysis <log.bbl> --html report.html
 ```
 
 You get a self-contained HTML report (no external dependencies, opens offline) with a Bode plot per axis — **gain (dB)**, **phase (deg)** with the −180° marker, and **coherence (0–1)** with the 0.8 threshold band — plus a **throttle × frequency resonance heatmap**. Low-coherence regions are greyed out. Use `--json` for machine-readable output. Reads gain/phase shape directly: a bump at 40–60 Hz → P/D overshoot, a narrow peak → frame resonance (dynamic notch), a high-frequency roll-off → low-pass filtering. See `references/chirp-tuning.md`.
+
+> Chirp is a **compile-time** feature. Run `get chirp` in the CLI first — if `chirp_amplitude_roll` & co. don't appear, re-flash with the `CHIRP` build option enabled.
 
 ## Setup wizard
 
@@ -299,6 +300,8 @@ python -m scripts.validate_config evals/sample_diff.txt
 python -m scripts.analyze_blackbox your_log.bbl --stats
 python -m scripts.gyro_noise your_log.bbl --plot
 python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
+python -m scripts.spectral_analysis your_log.bbl
+python -m scripts.chirp_analysis your_log.bbl --html report.html
 python -m scripts.selftest                      # stdlib-only smoke test
 python -m scripts.run_evals --ids 1 2 3
 ```
