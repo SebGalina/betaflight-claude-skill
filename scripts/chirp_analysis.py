@@ -202,11 +202,13 @@ def _phase_margin(freqs, gain_db, phase_deg, coh, fmin, fmax):
     if cross is None:
         return None, None
     fco = float(fb[cross])
-    # wrap phase to (-360, 0] then margin = 180 + phase
+    # Phase margin = 180 + phase at crossover, wrapped into (-180, 180].
+    # Must be allowed to go <= 0: a phase at/past -180 deg while gain is still
+    # >= 0 dB means the loop rings / is unstable (margin near 0 or negative).
     ph = float(pb[cross])
-    ph = ph - 360.0 * np.floor((ph + 180.0) / 360.0)  # bring near [-180,180]
-    margin = round(180.0 + ph, 1)
-    return round(fco, 1), margin
+    margin = 180.0 + ph
+    margin = margin - 360.0 * np.ceil((margin - 180.0) / 360.0)
+    return round(fco, 1), round(margin, 1)
 
 
 def _diagnose(peaks, phase_margin, fmin, fmax) -> list[str]:
@@ -225,7 +227,14 @@ def _diagnose(peaks, phase_margin, fmin, fmax) -> list[str]:
                 f"target it with a dynamic/static notch, not by changing PID gains."
             )
     if margin is not None:
-        verdict = "healthy" if margin >= 30 else ("marginal" if margin >= 15 else "low")
+        if margin <= 0:
+            verdict = "UNSTABLE — phase past -180 deg while gain >= 0 dB"
+        elif margin >= 30:
+            verdict = "healthy"
+        elif margin >= 15:
+            verdict = "marginal"
+        else:
+            verdict = "low"
         hints.append(
             f"Phase margin ~{margin:.0f} deg at the {fco:.0f} Hz 0 dB crossover ({verdict}). "
             f"Below ~30 deg the loop rings; reduce gains or add filtering."
@@ -258,20 +267,31 @@ def _throttle_map(df: pd.DataFrame, fs: float, axis_idx: int, fmin: float, fmax:
     if hi - lo < 1.0:
         return {}
     edges = np.linspace(lo, hi, nbins + 1)
-    nperseg = min(1024, int(flying.sum()))
-    freqs_ref = None
-    levels = []
-    centers = []
+
+    # Collect per-bin masks first so every bin can share ONE Welch window size.
+    # A per-bin nperseg would give bins of different length different frequency
+    # grids -> ragged `levels_db` rows that no longer line up with `freqs`.
+    masks, centers = [], []
     for b in range(nbins):
         m = flying & (thr >= edges[b]) & (thr <= edges[b + 1])
         centers.append(round(float((edges[b] + edges[b + 1]) / 2.0)))
-        if m.sum() < 256:
+        masks.append(m if int(m.sum()) >= 256 else None)
+    qualifying = [int(m.sum()) for m in masks if m is not None]
+    if not qualifying:
+        return {}
+    seg = min(1024, min(qualifying))     # one common window -> identical freq grid
+
+    freqs_ref = None
+    levels = []
+    for m in masks:
+        if m is None:
             levels.append(None)
             continue
         sig = sp_signal.detrend(df.loc[m, gcol].to_numpy(float))
-        f, pxx = sp_signal.welch(sig, fs=fs, nperseg=min(nperseg, len(sig)), window="hann")
+        f, pxx = sp_signal.welch(sig, fs=fs, nperseg=seg, window="hann")
         sel = (f >= fmin) & (f <= fmax)
-        freqs_ref = f[sel]
+        if freqs_ref is None:
+            freqs_ref = f[sel]
         levels.append((10.0 * np.log10(pxx[sel] + 1e-12)).round(1).tolist())
     if freqs_ref is None:
         return {}
@@ -311,6 +331,7 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
     results: dict = {}
     primary_axis_idx = None
     primary_n = 0
+    warned_fallback = False
 
     for i, axis in enumerate(AXES):
         if axes_filter and axis not in axes_filter:
@@ -319,6 +340,12 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
         xcol = _resolve_input_col(df, input_col, i)
         if gcol not in df.columns or xcol is None:
             continue
+        if (input_col != "setpoint" and input_col not in df.columns
+                and xcol == SETPOINT_COL.format(i) and not warned_fallback):
+            print(f"Note: input column '{input_col}' not in log; falling back to "
+                  f"setpoint[i]. Re-log with debug_mode=CHIRP for the firmware "
+                  f"reference signal (cleaner FRF).", file=sys.stderr)
+            warned_fallback = True
         mask = _axis_mask(df, i)
         if mask.sum() < 512:
             continue
