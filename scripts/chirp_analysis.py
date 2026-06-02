@@ -696,6 +696,34 @@ def _filter_disable_notes(noise: dict, config: dict) -> list[dict]:
     return out
 
 
+def _motor_harmonics(df: pd.DataFrame, mask: np.ndarray, poles, fmax: float) -> dict:
+    """Motor rotation harmonics from eRPM telemetry, over the quiet window.
+
+    BF stores eRPM in 100-eRPM LSBs; mechanical rotation Hz = eRPM*100 / (poles/2) / 60. Motors
+    run at a spread of rpm (4 motors x throttle variation), so each harmonic is a *band*
+    [n*f_lo, n*f_hi] rather than a line — exactly where the dyn_notch/RPM filter has to track.
+    """
+    if not poles:
+        return {}
+    cols = [f"eRPM[{i}]" for i in range(4) if f"eRPM[{i}]" in df.columns]
+    if not cols:
+        return {}
+    e = df.loc[np.asarray(mask), cols].to_numpy(float).ravel()
+    e = e[e > 0]
+    if e.size < 256:
+        return {}
+    hz = e * 100.0 / (poles / 2.0) / 60.0            # per-sample, per-motor fundamental
+    f_lo, f_hi = float(np.percentile(hz, 10)), float(np.percentile(hz, 90))
+    if f_hi <= 0:
+        return {}
+    bands = []
+    for n in range(1, 9):
+        if n * f_lo > fmax:
+            break
+        bands.append({"n": n, "lo": round(n * f_lo, 0), "hi": round(min(n * f_hi, fmax), 0)})
+    return {"f_lo": round(f_lo, 0), "f_hi": round(f_hi, 0), "bands": bands}
+
+
 def _noise_suggestions(noise: dict) -> list[dict]:
     """Observations from the noise PSD peaks — prominence over the floor + raw->filtered
     attenuation, both reference-independent ({fr, en})."""
@@ -708,11 +736,15 @@ def _noise_suggestions(noise: dict) -> list[dict]:
             "fr": "Plancher de bruit propre : aucun pic >70 Hz ne dépasse le plancher — rien de discret à notcher.",
             "en": "Clean noise floor: no >70 Hz peak rises above the floor — nothing discrete to notch."})
         return out
+    bands = (noise.get("motor") or {}).get("bands") or []
     for p in peaks:
         f, af, resid, att = p["freq_hz"], p["above_floor_db"], p["resid_db"], p["atten_db"]
-        head = (f"{f:.0f} Hz : pic de bruit à +{af:.0f} dB au-dessus du plancher, atténué de {att:.0f} dB "
+        hn = next((b["n"] for b in bands if b["lo"] <= f <= b["hi"]), None)
+        ofr = f", sur l'harmonique {hn}× moteur" if hn else ""
+        oen = f", on the {hn}× motor harmonic" if hn else ""
+        head = (f"{f:.0f} Hz : pic de bruit à +{af:.0f} dB au-dessus du plancher{ofr}, atténué de {att:.0f} dB "
                 f"par les filtres",
-                f"{f:.0f} Hz: noise peak at +{af:.0f} dB above the floor, cut by {att:.0f} dB by the filters")
+                f"{f:.0f} Hz: noise peak at +{af:.0f} dB above the floor{oen}, cut by {att:.0f} dB by the filters")
         if resid <= RESIDUAL_OK_DB:
             out.append({
                 "fr": f"{head[0]} → résiduel +{max(resid,0):.0f} dB, dans le plancher : aplati, rien à faire ici.",
@@ -741,7 +773,7 @@ def _downsample(freqs, *series, fmin, fmax, max_pts=600):
 
 
 def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT_FMAX,
-            nperseg=None) -> dict:
+            nperseg=None, motor_poles=None) -> dict:
     nyq = fs / 2.0
     fmax = min(fmax, nyq * 0.98)
     if nperseg is None:
@@ -842,6 +874,10 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
         if thr is not None:
             quiet = quiet & (thr > idle)
         noise = _noise_spectrum(df, fs, primary_axis_idx, quiet, fmin=30.0, fmax=fmax)
+        if noise and motor_poles:
+            mh = _motor_harmonics(df, quiet, motor_poles, float(noise["freqs"][-1]))
+            if mh:
+                noise["motor"] = mh
 
     # Spectrogram of the primary axis over its (contiguous) chirp window -> the rising sweep.
     spectro = {}
@@ -921,6 +957,7 @@ def _parse_header_config(bbl_path: Path) -> dict:
                         "q": (ints("dyn_notch_q") or [None])[0],
                         "min": dn_min, "max": dn_max}
     cfg["rpm_harmonics"] = (ints("rpm_filter_harmonics") or [0])[0]
+    cfg["motor_poles"] = i1("motor_poles")
     return cfg
 
 
@@ -1149,9 +1186,10 @@ MAX_OVERLAY_PASSES = 8   # keep the full file, but only render the last N passes
 def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
     """Run the analysis on one log and package it as a self-contained 'pass'."""
     axes_filter = [args.axis] if args.axis else None
-    results, throttle_map, noise, spectro = analyse(df, fs, args.input_col, axes_filter,
-                                                    fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg)
     config = _parse_header_config(path) if path.suffix.lower() in (".bbl", ".bfl") else {}
+    results, throttle_map, noise, spectro = analyse(df, fs, args.input_col, axes_filter,
+                                                    fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg,
+                                                    motor_poles=config.get("motor_poles"))
     nyq = fs / 2.0
     throttle_max = None
     thr, idle, thr_src = _throttle_series(df)
@@ -1385,6 +1423,18 @@ GLOSSARY = {
               "with rpm — a line that shifts as throttle rises is motor-borne (RPM filter / dyn notch), a "
               "fixed line is a frame resonance (static notch).",
     },
+    "motor_harmonics": {
+        "fr": "Harmoniques moteur : le bruit moteur se loge aux multiples de la fréquence de rotation des "
+              "hélices, déduite de l'eRPM (rotation Hz = eRPM×100 / (pôles/2) / 60). Comme les 4 moteurs "
+              "tournent à des régimes un peu différents et que le gaz varie, chaque harmonique (1×, 2×, 3×…) "
+              "est une bande, pas une raie. Un pic de bruit DANS une bande = bruit moteur (du ressort du RPM "
+              "filter / dyn_notch) ; un pic HORS bande = résonance de cadre/pale (notch statique).",
+        "en": "Motor harmonics: motor noise sits at multiples of the prop rotation frequency, derived from "
+              "eRPM (rotation Hz = eRPM×100 / (poles/2) / 60). Since the 4 motors run at slightly different "
+              "rpm and throttle varies, each harmonic (1×, 2×, 3×…) is a band, not a line. A noise peak INSIDE "
+              "a band = motor noise (RPM filter / dyn_notch territory); a peak OUTSIDE = a frame/prop "
+              "resonance (static notch).",
+    },
     "spectrogram": {
         "fr": "Spectrogramme : une carte temps × fréquence de l'énergie du gyro pendant le chirp. Le "
               "balayage du chirp apparaît comme une diagonale qui monte en fréquence ; une résonance "
@@ -1463,7 +1513,7 @@ STRINGS = {
                      "la température moteur.",
         "noise_cap_nounfilt": "{psd} — gyro filtré (gyroUnfilt absent du log). 0 dB = plancher de bruit.",
         "leg_raw": "brut (unfilt)", "leg_filt": "filtré (gyroADC)",
-        "leg_floor": "plancher", "leg_resid": "résiduel (indicatif)",
+        "leg_floor": "plancher", "leg_resid": "résiduel (indicatif)", "leg_motor": "harmoniques moteur",
         "step2_h": "PID", "step2_sub": "— après avoir figé le filtrage",
         "spectro_h": "Balayage du chirp (spectrogramme)",
         "spectro_cap": "{sg} — gyro {ax} pendant le sweep. La diagonale qui monte = le chirp ; les bandes "
@@ -1513,7 +1563,7 @@ STRINGS = {
                      "temperature.",
         "noise_cap_nounfilt": "{psd} — filtered gyro (gyroUnfilt absent from the log). 0 dB = noise floor.",
         "leg_raw": "raw (unfilt)", "leg_filt": "filtered (gyroADC)",
-        "leg_floor": "floor", "leg_resid": "residual (indicative)",
+        "leg_floor": "floor", "leg_resid": "residual (indicative)", "leg_motor": "motor harmonics",
         "step2_h": "PID", "step2_sub": "— after the filtering is frozen",
         "spectro_h": "Chirp sweep (spectrogram)",
         "spectro_cap": "{sg} — {ax} gyro during the sweep. The rising diagonal = the chirp; horizontal "
@@ -1782,8 +1832,14 @@ function render() {{
       const H3=180, nc=mkCanvas(box,H3).getContext('2d');
       drawAxes(nc,H3,fmin,fmax,lo,hi,'dB/plancher');
       if (CFG.dyn_notch) vband(nc,H3,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
-      // vertical lines = each filter's cut-off frequency (the LPF starts attenuating above it)
       nc.font='10px sans-serif';
+      // motor-harmonic bands (from eRPM): where motor noise lives -> a peak in a band is motor noise
+      const mh=ns.motor;
+      if (mh && mh.bands) for (const b of mh.bands) {{
+        vband(nc,H3,b.lo,b.hi,fmin,fmax,'rgba(255,138,80,0.12)');
+        if (b.hi>fmin && b.lo<fmax) {{ nc.fillStyle='#ff9a6a'; nc.fillText(b.n+'×', logx(Math.max(b.lo,fmin),fmin,fmax)+1, H3-24); }}
+      }}
+      // vertical lines = each filter's cut-off frequency (the LPF starts attenuating above it)
       const vcut=(fc,col,lab,yl)=>{{ if(!fc||fc<fmin||fc>fmax)return; const x=logx(fc,fmin,fmax);
         nc.strokeStyle=col; nc.lineWidth=1; nc.setLineDash([3,3]); nc.beginPath(); nc.moveTo(x,8); nc.lineTo(x,H3-22); nc.stroke(); nc.setLineDash([]);
         if(lab){{ nc.fillStyle=col; nc.fillText(lab,Math.min(x+2,W-44),yl||16); }} }};
@@ -1808,7 +1864,8 @@ function render() {{
         '<span style="color:#ff8a80">-- '+T('leg_resid')+'</span>'+
         '<span style="color:#5a9bd4">| '+tip('gyro_lpf','coupures gyro LPF')+'</span>'+
         '<span style="color:#d48fd4">| '+tip('dterm_lpf','coupures D-term LPF')+'</span>'+
-        '<span style="color:#ffd479">▮ '+tip('dyn_notch','dyn_notch')+'</span>'));
+        '<span style="color:#ffd479">▮ '+tip('dyn_notch','dyn_notch')+'</span>'+
+        (ns.motor?'<span style="color:#ff9a6a">▮ '+tip('motor_harmonics',T('leg_motor'))+'</span>':'')));
       box.appendChild(el('div','legend',(ns.has_unfilt?T('noise_cap'):T('noise_cap_nounfilt')).replace('{{psd}}',tip('noise_psd','PSD'))));
     }}
 
@@ -1941,7 +1998,7 @@ function render() {{
   // ---- Glossary ----
   {{
     const order=['chirp','gain','phase','phase_margin','crossover','coherence','resonance',
-      'noise_psd','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','spectrogram','step_response','propwash'];
+      'noise_psd','motor_harmonics','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','spectrogram','step_response','propwash'];
     const box=el('div','axis'); root.appendChild(box); box.appendChild(el('h2',null,T('glossary_h')));
     let s='<dl class=glos>';
     for (const k of order) {{ const g=GL[k]; if (g && (g[LANG]||g.fr)) {{
