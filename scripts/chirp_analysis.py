@@ -339,37 +339,55 @@ def _gain_peaks(freqs, gain_db, coh, fmin, fmax) -> list[dict]:
     return peaks
 
 
-def _phase_margin(freqs, gain_db, phase_deg, coh, fmin, fmax):
-    """Phase margin: distance of phase from -180 deg at the 0 dB gain crossover.
+def _smooth(y, w):
+    """Centred moving average (odd window), edge-preserving."""
+    w = int(max(1, w) | 1)
+    if w <= 1 or len(y) < w:
+        return np.asarray(y, float)
+    k = np.ones(w) / w
+    return np.convolve(np.asarray(y, float), k, mode="same")
 
-    Searches the trusted band for the highest frequency where gain crosses 0 dB
-    downward; reports (crossover_hz, margin_deg). Returns (None, None) if no clean
-    crossover exists in coherent data.
+
+def _phase_margin(freqs, gain_db, phase_deg, coh, fmin, fmax):
+    """Phase margin at the 0 dB gain crossover, made robust to curve wiggle and flight noise.
+
+    The phase is steep at the crossover (~10°/Hz), so reading it at one raw sample is jumpy.
+    We smooth the gain/phase, interpolate the exact 0 dB crossing, read the phase there, and
+    estimate an uncertainty from the local gain scatter / slope propagated through the phase
+    slope. Returns (crossover_hz, margin_deg, margin_unc_deg) or (None, None, None).
     """
     band = (freqs >= fmin) & (freqs <= fmax) & (coh >= COHERENCE_GATE)
     fb, gb, pb = freqs[band], gain_db[band], phase_deg[band]
-    if len(fb) < 3:
-        return None, None
-    cross = None
-    for i in range(1, len(gb)):
-        if gb[i - 1] >= 0.0 > gb[i]:
-            cross = i
-    if cross is None:
-        return None, None
-    fco = float(fb[cross])
-    # Phase margin = 180 + phase at crossover, wrapped into (-180, 180].
-    # Must be allowed to go <= 0: a phase at/past -180 deg while gain is still
-    # >= 0 dB means the loop rings / is unstable (margin near 0 or negative).
-    ph = float(pb[cross])
+    if len(fb) < 6:
+        return None, None, None
+    w = min(9, len(gb) | 1)
+    gs, ps = _smooth(gb, w), _smooth(pb, w)
+    crossings = [i for i in range(1, len(gs)) if gs[i - 1] >= 0.0 > gs[i]]
+    if not crossings:
+        return None, None, None
+    i = crossings[-1]                        # highest-freq crossover = the loop bandwidth
+    g0, g1, f0, f1 = gs[i - 1], gs[i], fb[i - 1], fb[i]
+    t = float(g0 / (g0 - g1)) if g0 != g1 else 0.0      # interpolate 0 dB crossing
+    fco = float(f0 + t * (f1 - f0))
+    ph = float(ps[i - 1] + t * (ps[i] - ps[i - 1]))
     margin = 180.0 + ph
     margin = margin - 360.0 * np.ceil((margin - 180.0) / 360.0)
-    return round(fco, 1), round(margin, 1)
+    # uncertainty: Δfco = gain scatter / |dgain/df|, propagated through |dphase/df|
+    lo, hi = max(0, i - w), min(len(fb), i + w + 1)
+    span = float(fb[hi - 1] - fb[lo]) or 1.0
+    dgdf = float(gs[hi - 1] - gs[lo]) / span
+    dpdf = float(ps[hi - 1] - ps[lo]) / span
+    resid = float(np.std(gb[lo:hi] - gs[lo:hi]))
+    dfco = abs(resid / dgdf) if abs(dgdf) > 1e-6 else span
+    unc = min(90.0, abs(dpdf) * dfco)
+    return round(fco, 1), round(margin, 1), round(unc, 0)
 
 
 def _diagnose(peaks, phase_margin, fmin, fmax) -> list[dict]:
     """Bode diagnosis hints, each as a {fr, en} pair."""
     hints = []
-    fco, margin = phase_margin
+    fco, margin, unc = (phase_margin + (None,))[:3] if len(phase_margin) == 2 else phase_margin
+    pm = f"±{unc:.0f}° " if unc else ""
     for p in peaks[:3]:
         f, pr = p["freq_hz"], p["prominence_db"]
         if f < 80:
@@ -396,10 +414,12 @@ def _diagnose(peaks, phase_margin, fmin, fmax) -> list[dict]:
         else:
             vfr, ven = "faible", "low"
         hints.append({
-            "fr": f"Marge de phase ~{margin:.0f}° au crossover 0 dB de {fco:.0f} Hz ({vfr}). "
-                  f"Sous ~30° la boucle sonne ; réduire les gains ou ajouter du filtrage.",
-            "en": f"Phase margin ~{margin:.0f}° at the {fco:.0f} Hz 0 dB crossover ({ven}). "
-                  f"Below ~30° the loop rings; reduce gains or add filtering.",
+            "fr": f"Marge de phase ~{margin:.0f}° {pm}au crossover 0 dB de {fco:.0f} Hz ({vfr}). "
+                  f"Sous ~30° la boucle sonne ; réduire les gains ou ajouter du filtrage. "
+                  f"(Le scalaire est sensible à la pente de phase — compare plutôt les courbes/la step.)",
+            "en": f"Phase margin ~{margin:.0f}° {pm}at the {fco:.0f} Hz 0 dB crossover ({ven}). "
+                  f"Below ~30° the loop rings; reduce gains or add filtering. "
+                  f"(The scalar is sensitive to the phase slope — prefer comparing the curves/step.)",
         })
     else:
         hints.append({
@@ -831,7 +851,7 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
 
         freqs, gain_db, phase_deg, coh = _frf(x, y, fs, nperseg)
         peaks = _gain_peaks(freqs, gain_db, coh, a_fmin, a_fmax)
-        fco, margin = _phase_margin(freqs, gain_db, phase_deg, coh, a_fmin, a_fmax)
+        fco, margin, m_unc = _phase_margin(freqs, gain_db, phase_deg, coh, a_fmin, a_fmax)
 
         # Step response from the calibrated setpoint -> gyro (time-domain companion to the Bode).
         step = {}
@@ -853,9 +873,10 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             "coherence": [round(float(v), 3) for v in cb],
             "peaks": peaks,
             "phase_margin_deg": margin,
+            "phase_margin_unc_deg": m_unc,
             "crossover_hz": fco,
             "step": step,
-            "diagnosis": _diagnose(peaks, (fco, margin), a_fmin, a_fmax),
+            "diagnosis": _diagnose(peaks, (fco, margin, m_unc), a_fmin, a_fmax),
             "step_diagnosis": _step_diagnosis(step.get("metrics", {})) if step else [],
         }
 
@@ -1067,10 +1088,11 @@ def _pid_suggestions(axes: dict, cfg: dict, noise: dict | None = None) -> dict:
         p = pids.get(axis)
         P, D = (p[0], p[2]) if p else (None, None)
         pd = f"P={P}/D={D}" if p else "PID ?"
+        mu = d.get("phase_margin_unc_deg")
         ov = (d.get("step") or {}).get("metrics", {}).get("overshoot_pct")
         ovf = f", la step montre {ov:.0f}% d'overshoot" if ov is not None else ""
         ove = f", the step shows {ov:.0f}% overshoot" if ov is not None else ""
-        at = f"@ {fco:.0f} Hz" if fco else ""
+        at = (f"±{mu:.0f}° " if mu else "") + (f"@ {fco:.0f} Hz" if fco else "")
         if m is None:
             out[axis] = {
                 "fr": f"Pas de crossover 0 dB dans la bande cohérente : la boucle reste sous 0 dB (tune conservateur) "
@@ -1912,7 +1934,8 @@ function render() {{
     const d=PRI.axes[axis]; if(!d||!d.freq) continue;
     const box=el('div','axis'); root.appendChild(box);
     const m=d.phase_margin_deg, fco=d.crossover_hz;
-    const mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'° @ '+(fco?fco.toFixed(0):'?')+' Hz');
+    const mu=d.phase_margin_unc_deg;
+    const mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'°'+(mu?(' ±'+mu.toFixed(0)+'°'):'')+' @ '+(fco?fco.toFixed(0):'?')+' Hz');
     box.appendChild(el('h2',null,axis.toUpperCase()+' <span class=meta>['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz] — '+mtxt+'</span>'));
     const fmin=d.band_hz[0]||1, fmax=d.band_hz[1]||500;
     const ser=PASSES.map((p,i)=>({{p:p.axes&&p.axes[axis], i:i, primary:i===PRIMARY}})).filter(o=>o.p&&o.p.freq);
@@ -2042,7 +2065,8 @@ def _print_human(report: dict, lang: str = "fr") -> None:
         print(f"-- {axis.upper()} " + "-" * 30)
         print(f"  Input / band     : {d['input_col']}  [{d['band_hz'][0]:g}–{d['band_hz'][1]:g} Hz]  n={d['n_samples']}")
         if d["phase_margin_deg"] is not None:
-            print(f"  Phase margin     : {d['phase_margin_deg']:.0f} deg @ {d['crossover_hz']:.0f} Hz")
+            mu = d.get("phase_margin_unc_deg")
+            print(f"  Phase margin     : {d['phase_margin_deg']:.0f}{(' ±' + format(mu, '.0f')) if mu else ''} deg @ {d['crossover_hz']:.0f} Hz")
         else:
             print("  Phase margin     : no 0 dB crossover in coherent band")
         st = (d.get("step") or {}).get("metrics")
