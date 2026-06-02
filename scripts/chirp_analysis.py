@@ -1069,79 +1069,6 @@ def _filter_suggestions(throttle_map: dict, cfg: dict) -> list[dict]:
     return sug
 
 
-def _pid_suggestions(axes: dict, cfg: dict, noise: dict | None = None) -> dict:
-    """Per-axis observations from the phase margin + step, cross-linked to the filtering
-    headroom (constatation style, not prescriptions) — {fr, en} each."""
-    out: dict = {}
-    pids = cfg.get("pids") or {}
-    worst = _worst_residual_db(noise)
-    has_margin = worst is not None and worst <= RESIDUAL_OK_DB   # noise back in the floor -> filtering headroom
-    # cross-link clause used on margin-limited axes
-    if has_margin:
-        link_fr = " Comme le spectre de bruit montre de la marge de filtrage, l'alléger relèverait d'abord cette marge sans toucher aux gains"
-        link_en = " Since the noise spectrum shows filtering headroom, loosening it would lift this margin first without touching the gains"
-    else:
-        link_fr = link_en = ""
-    for axis, d in axes.items():
-        m = d.get("phase_margin_deg")
-        fco = d.get("crossover_hz")
-        p = pids.get(axis)
-        P, D = (p[0], p[2]) if p else (None, None)
-        pd = f"P={P}/D={D}" if p else "PID ?"
-        mu = d.get("phase_margin_unc_deg")
-        ov = (d.get("step") or {}).get("metrics", {}).get("overshoot_pct")
-        ovf = f", la step montre {ov:.0f}% d'overshoot" if ov is not None else ""
-        ove = f", the step shows {ov:.0f}% overshoot" if ov is not None else ""
-        at = (f"±{mu:.0f}° " if mu else "") + (f"@ {fco:.0f} Hz" if fco else "")
-        if m is None:
-            out[axis] = {
-                "fr": f"Pas de crossover 0 dB dans la bande cohérente : la boucle reste sous 0 dB (tune conservateur) "
-                      f"ou la cohérence est trop basse pour lire la marge. ({pd})",
-                "en": f"No 0 dB crossover in the coherent band: the loop stays below 0 dB (conservative tune) or "
-                      f"coherence is too low to read the margin. ({pd})"}
-        elif m <= 5:
-            if has_margin:
-                tf, te = link_fr + ".", link_en + "."
-            elif P:
-                tf = f" Les réduire (P vers ~{int(round(P*0.85))}) ramènerait la marge en positif."
-                te = f" Reducing them (P toward ~{int(round(P*0.85))}) would bring the margin positive."
-            else:
-                tf = te = ""
-            out[axis] = {
-                "fr": f"Marge {m:.0f}° {at} — négative/quasi nulle : la boucle est au bord de l'auto-oscillation "
-                      f"(le Bode passe −180° avec gain ≥ 0 dB{ovf}). À {pd}, les gains sont trop hauts pour la "
-                      f"marge disponible.{tf}",
-                "en": f"Margin {m:.0f}° {at} — negative/near zero: the loop is on the edge of self-oscillation "
-                      f"(the Bode passes −180° with gain ≥ 0 dB{ove}). At {pd}, the gains are too high for the "
-                      f"available margin.{te}"}
-        elif m < 20:
-            if has_margin:
-                tf, te = link_fr + ".", link_en + "."
-            elif P:
-                tf = f" Réduire un peu P (vers ~{int(round(P*0.9))}) l'assainirait."
-                te = f" A small P cut (toward ~{int(round(P*0.9))}) would clean it up."
-            else:
-                tf = te = ""
-            out[axis] = {
-                "fr": f"Marge faible {m:.0f}° {at} : la boucle rebondit encore{ovf}. {pd}.{tf}",
-                "en": f"Low margin {m:.0f}° {at}: the loop still bounces{ove}. {pd}.{te}"}
-        elif m < 35:
-            out[axis] = {
-                "fr": f"Marge correcte mais limite {m:.0f}° {at}{ovf} : tune sain, peu de marge à regagner côté gains. ({pd})",
-                "en": f"OK-but-limited margin {m:.0f}° {at}{ove}: healthy tune, little margin to gain on the gains. ({pd})"}
-        elif m < 55:
-            out[axis] = {
-                "fr": f"Marge saine {m:.0f}° {at}{ovf} : axe bien amorti. ({pd})",
-                "en": f"Healthy margin {m:.0f}° {at}{ove}: well-damped axis. ({pd})"}
-        else:
-            out[axis] = {
-                "fr": f"Grande marge {m:.0f}° {at}{ovf} → réserve confortable : une fois le filtrage figé, c'est "
-                      f"l'axe où P ({P}) a le plus de place pour monter si le ressenti est mou. ({pd})",
-                "en": f"Large margin {m:.0f}° {at}{ove} → comfortable reserve: once filtering is frozen, this is the "
-                      f"axis where P ({P}) has the most room to rise if it feels soft. ({pd})"}
-    return out
-
-
 def _synthesis(axes: dict, noise: dict, config: dict, throttle_max: float | None = None) -> list[dict]:
     """Top-level 'read' of the whole report as linked observations (filter -> phase -> P/D).
 
@@ -1233,7 +1160,6 @@ def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
         "synthesis": _synthesis(results, noise, config, throttle_max),
         "filter_suggestions": _filter_suggestions(throttle_map, config) if config else [],
         "noise_suggestions": _noise_suggestions(noise) + _filter_disable_notes(noise, config),
-        "pid_suggestions": _pid_suggestions(results, config, noise) if config else {},
     }
 
 
@@ -1523,8 +1449,18 @@ STRINGS = {
                        "sert de référence pour les pistes ci-dessous.",
         "guide_add": "➕ Pour ajouter une passe : modifie filtres/PID, refais un log chirp, puis relance "
                      "<code>chirp_analysis.py nouveau.bbl --html report.html</code> — il s'ajoute à l'historique.",
-        "cfg_h": "Réglages actuels", "cfg_sub": "(extraits du log — passe de référence)",
-        "synth_h": "Lecture d'ensemble",
+        "cfg_init": "Réglages initiaux", "cfg_last": "Réglages — dernière passe", "cfg_sub": "(extraits du log)",
+        "synth_h": "Lecture d'ensemble", "synth_intro": "D'après la dernière passe",
+        "synth_evo": "Évolution depuis la passe 1",
+        "guide_vsag": "⚙️ Pour des passes <b>comparables</b> : active <code>vbat_sag_compensation</code> "
+                      "(et/ou vole à niveau de batterie similaire). Sinon l'autorité moteur varie d'un vol à "
+                      "l'autre et déplace les courbes et les marges, même sans toucher au tune.",
+        "overlay_hint": "décoche une passe pour masquer ses courbes",
+        "tmap_howto": "Comment lire — chaque ligne = une tranche de gaz (ralenti en bas, plein gaz en haut), "
+                      "couleur = puissance de bruit du gyro à cette fréquence. Une raie verticale qui <b>monte en "
+                      "fréquence quand le gaz augmente</b> = harmonique moteur ; une raie à <b>fréquence fixe</b> "
+                      "quel que soit le gaz = résonance de cadre/pale.",
+        "tmap_lo": "peu de bruit", "tmap_hi": "beaucoup",
         "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
         "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
         "tmap_none": "indisponible (ni rcCommand[3] ni motor loggés). Active le throttle/les moteurs en blackbox.",
@@ -1543,7 +1479,7 @@ STRINGS = {
         "overlay": "Courbes superposées :",
         "bode_h": "Réponse en fréquence (Bode)", "step_h": "Réponse indicielle (temporel)",
         "coh_cap": "{coh} — fiabilité de la mesure par fréquence (grisé si &lt; {gate})",
-        "lead_pid": "Piste PID :", "margin": "marge", "no_xover": "pas de crossover",
+        "margin": "marge", "no_xover": "pas de crossover",
         "step3_h": "Historique & comparaison",
         "step3_single": "Une seule passe pour l'instant. Refais un log chirp après tes modifs : il s'empilera "
                         "ici pour la comparaison avant/après.",
@@ -1573,8 +1509,18 @@ STRINGS = {
                        "the leads below.",
         "guide_add": "➕ To add a pass: change filters/PID, re-fly a chirp log, then re-run "
                      "<code>chirp_analysis.py new.bbl --html report.html</code> — it appends to the history.",
-        "cfg_h": "Current settings", "cfg_sub": "(read from the log — reference pass)",
-        "synth_h": "Overview",
+        "cfg_init": "Initial settings", "cfg_last": "Settings — latest pass", "cfg_sub": "(read from the log)",
+        "synth_h": "Overview", "synth_intro": "Based on the latest pass",
+        "synth_evo": "Change since pass 1",
+        "guide_vsag": "⚙️ For <b>comparable</b> passes: enable <code>vbat_sag_compensation</code> (and/or fly at "
+                      "a similar battery level). Otherwise motor authority varies between flights and shifts the "
+                      "curves and margins even with no tune change.",
+        "overlay_hint": "untick a pass to hide its curves",
+        "tmap_howto": "How to read — each row = a throttle slice (idle at the bottom, full throttle at the top), "
+                      "colour = gyro noise power at that frequency. A vertical line that <b>climbs in frequency as "
+                      "throttle rises</b> = a motor harmonic; a <b>fixed-frequency</b> line at any throttle = a "
+                      "frame/prop resonance.",
+        "tmap_lo": "low noise", "tmap_hi": "high",
         "step1_h": "Filtering", "step1_sub": "— set this first",
         "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
         "tmap_none": "unavailable (neither rcCommand[3] nor motors logged). Enable throttle/motors in blackbox.",
@@ -1593,7 +1539,7 @@ STRINGS = {
         "overlay": "Overlaid curves:",
         "bode_h": "Frequency response (Bode)", "step_h": "Step response (time domain)",
         "coh_cap": "{coh} — per-frequency measurement reliability (greyed if &lt; {gate})",
-        "lead_pid": "PID lead:", "margin": "margin", "no_xover": "no crossover",
+        "margin": "margin", "no_xover": "no crossover",
         "step3_h": "History & comparison",
         "step3_single": "Only one pass so far. Re-fly a chirp log after your changes: it will stack up here for "
                         "before/after comparison.",
@@ -1656,6 +1602,12 @@ def _html_report(report: dict, file_name: str) -> str:
   table.cmp th {{ color:#9ecbff; font-weight:600; }}
   table.cmp td.lbl {{ color:#8893a5; }}
   table.cmp td.chg {{ color:#ffd479; font-weight:600; background:#241f12; }}
+  .passleg {{ margin:6px 0 4px; font-size:12px; color:#c2cad6; }}
+  .passleg label {{ display:inline-flex; align-items:center; gap:5px; margin:2px 16px 2px 0; cursor:pointer; }}
+  .passleg input {{ accent-color:#9ecbff; cursor:pointer; }}
+  .howto {{ font-size:12px; color:#aab4c4; margin:4px 0 2px; }}
+  .scalebar {{ display:inline-block; height:10px; width:120px; vertical-align:middle; margin:0 6px;
+     border-radius:2px; background:linear-gradient(90deg, rgb(0,120,255), rgb(150,90,170), rgb(255,40,30)); }}
   .langbtn {{ position:fixed; top:16px; right:16px; z-index:30; background:#28425c; color:#cfe3ff;
      border:1px solid #3a5a78; border-radius:6px; padding:5px 12px; cursor:pointer; font:600 12px system-ui; }}
   .twocol {{ display:flex; gap:14px; flex-wrap:wrap; }}
@@ -1766,6 +1718,7 @@ function filterOverlay(ctx,h,fmin,fmax,xover) {{
 }}
 const root=document.getElementById('root');
 const single = R.total_passes<=1;
+const HIDDEN = new Set();   // pass indices whose overlay curves are hidden (checkbox toggles)
 
 function render() {{
   root.innerHTML='';
@@ -1783,13 +1736,14 @@ function render() {{
         .replace('{{pm}}',tip('phase_margin',T('w_pm')))
         .replace('{{res}}',tip('resonance',T('w_res')))+'</p>';
     s+='<p>'+(single ? T('guide_single') : T('guide_multi').replace('{{n}}',R.total_passes))+'</p>';
+    s+='<p class=meta>'+T('guide_vsag')+'</p>';
     s+='<p class=meta>'+T('guide_add')+'</p>';
     g.innerHTML=s; root.appendChild(g);
   }}
 
   // ---- Current settings ----
   if (CFG.pids) {{
-    const cb=el('div','axis'); let s='<h2>'+T('cfg_h')+' <span class=meta>'+T('cfg_sub')+'</span></h2><div class=cfg>';
+    const cb=el('div','axis'); let s='<h2>'+(single?T('cfg_init'):T('cfg_last'))+' <span class=meta>'+T('cfg_sub')+'</span></h2><div class=cfg>';
     s+='<b>'+tip('pid','PID')+'</b> — '+Object.entries(CFG.pids).map(([a,v])=>a+' P'+v[0]+'/I'+v[1]+'/D'+v[2]).join(' &nbsp; ');
     if (CFG.d_max) s+=' &nbsp; '+tip('dmax','D_max')+' '+CFG.d_max.join('/');
     s+='<br>';
@@ -1799,12 +1753,30 @@ function render() {{
     s+='</div>'; cb.innerHTML=s; root.appendChild(cb);
   }}
 
-  // ---- Overview (linked observations: filter -> phase -> P/D) ----
+  // ---- Overview (linked observations + multi-pass evolution) ----
   if (PRI.synthesis && PRI.synthesis.length) {{
     const box=el('div','axis guide'); root.appendChild(box);
     box.appendChild(el('h2',null,T('synth_h')));
+    box.appendChild(el('p','meta',T('synth_intro')+' ('+T('pass_word')+' '+PRI.n+') :'));
     const ul=el('ul','sugg'); for (const o of PRI.synthesis) ul.appendChild(el('li',null,loc(o)));
     box.appendChild(ul);
+    if (!single) {{   // what changed from pass 1 to the latest, and did it help
+      const A=PASSES[0], B=PRI;
+      const fa=Object.fromEntries(cfgFields(A.config||{{}}));
+      const chg=cfgFields(B.config||{{}}).filter(([k,v])=>fa[k]!=null && fa[k]!==v).map(([k,v])=>k+' '+fa[k]+'→'+v);
+      const dl=[];
+      for (const ax of Object.keys(B.axes||{{}})) {{
+        const X=(A.axes||{{}})[ax], Y=B.axes[ax]; if(!X||!Y) continue;
+        const parts=[];
+        if (X.phase_margin_deg!=null && Y.phase_margin_deg!=null) parts.push(tip('phase_margin','marge')+' '+X.phase_margin_deg.toFixed(0)+'→'+Y.phase_margin_deg.toFixed(0)+'°');
+        const xo=(X.step||{{}}).metrics, yo=(Y.step||{{}}).metrics;
+        if (xo&&yo&&xo.overshoot_pct!=null&&yo.overshoot_pct!=null) parts.push('overshoot '+xo.overshoot_pct.toFixed(0)+'→'+yo.overshoot_pct.toFixed(0)+'%');
+        if (parts.length) dl.push('<b>'+ax+'</b> : '+parts.join(', '));
+      }}
+      let e='<p class=diff style="margin-top:8px"><b>'+T('synth_evo')+' :</b> '+(chg.length?chg.join(', '):'—')+'</p>';
+      if (dl.length) e+='<ul class=sugg>'+dl.map(x=>'<li>'+x+'</li>').join('')+'</ul>';
+      box.appendChild(el('div',null,e));
+    }}
   }}
 
   // ---- Step 1: Filtering ----
@@ -1838,6 +1810,8 @@ function render() {{
         if(lab){{ctx.fillStyle=col; ctx.fillText(lab,x+2,18);}} }};
       if (CFG.dyn_notch) {{ tvl(CFG.dyn_notch.min,'#ffd479','dyn_notch'); tvl(CFG.dyn_notch.max,'#ffd479',''); }}
       for (const su of (PRI.filter_suggestions||[])) tvl(su.freq_hz,'#ff8a80','rés');
+      box.appendChild(el('div','howto','<span class=meta>'+T('tmap_lo')+'</span><span class=scalebar></span><span class=meta>'+T('tmap_hi')+'</span>'));
+      box.appendChild(el('div','howto',T('tmap_howto')));
     }} else {{
       box.appendChild(el('p','meta',tip('throttle_map',T('tmap_h'))+' — '+T('tmap_none')));
     }}
@@ -1903,7 +1877,18 @@ function render() {{
   {{
     const head=el('div','axis step pid'); root.appendChild(head);
     head.appendChild(el('h2',null,'<span class=stepnum>2</span>'+tip('pid',T('step2_h'))+' '+T('step2_sub')));
-    head.appendChild(el('p','meta',T('overlay')+' '+PASSES.map((p,i)=>'<span class=swatch style="background:'+PAL[i%PAL.length]+'"></span>'+passLabel(p)).join(' &nbsp; ')));
+    if (!single) {{   // one checkbox per pass — tick/untick to show/hide its overlaid curves
+      const lg=el('div','passleg'); lg.appendChild(el('span','meta',T('overlay')+' <i>('+T('overlay_hint')+')</i><br>'));
+      PASSES.forEach((p,i)=>{{
+        const lab=document.createElement('label');
+        const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=!HIDDEN.has(i);
+        cb.addEventListener('change',()=>{{ cb.checked?HIDDEN.delete(i):HIDDEN.add(i); render(); }});
+        const sw=document.createElement('span'); sw.className='swatch'; sw.style.background=PAL[i%PAL.length];
+        lab.appendChild(cb); lab.appendChild(sw); lab.appendChild(document.createTextNode(passLabel(p)));
+        lg.appendChild(lab);
+      }});
+      head.appendChild(lg);
+    }}
     // chirp spectrogram (primary pass): the rising sweep + resonances as horizontal bands
     const sg=PRI.spectrogram;
     if (sg && sg.levels_db && sg.levels_db.length) {{
@@ -1938,7 +1923,7 @@ function render() {{
     const mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'°'+(mu?(' ±'+mu.toFixed(0)+'°'):'')+' @ '+(fco?fco.toFixed(0):'?')+' Hz');
     box.appendChild(el('h2',null,axis.toUpperCase()+' <span class=meta>['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz] — '+mtxt+'</span>'));
     const fmin=d.band_hz[0]||1, fmax=d.band_hz[1]||500;
-    const ser=PASSES.map((p,i)=>({{p:p.axes&&p.axes[axis], i:i, primary:i===PRIMARY}})).filter(o=>o.p&&o.p.freq);
+    const ser=PASSES.map((p,i)=>({{p:p.axes&&p.axes[axis], i:i, primary:i===PRIMARY}})).filter(o=>o.p&&o.p.freq&&!HIDDEN.has(o.i));
 
     box.appendChild(el('h3',null,tip('gain',T('bode_h'))));
     let gAll=[]; ser.forEach(o=>gAll=gAll.concat(o.p.gain_db));
@@ -1974,13 +1959,11 @@ function render() {{
       if (mt) box.appendChild(el('div','legend',T('metrics').replace('{{ov}}',mt.overshoot_pct).replace('{{rise}}',mt.rise_ms==null?'–':mt.rise_ms).replace('{{settle}}',mt.settle_ms==null?'–':mt.settle_ms)));
     }}
 
-    // diagnosis + step diagnosis + PID lead (reference pass)
+    // measured diagnosis (Bode + step) — observations only, PID advice is left to the LLM
     const ul=el('ul','diag');
     for (const line of (d.diagnosis||[])) ul.appendChild(el('li',null,loc(line)));
     for (const line of (d.step_diagnosis||[])) ul.appendChild(el('li',null,loc(line)));
     box.appendChild(ul);
-    if (PRI.pid_suggestions && PRI.pid_suggestions[axis])
-      box.appendChild(el('p','pid','<b>'+T('lead_pid')+'</b> '+loc(PRI.pid_suggestions[axis])));
   }}
 
   // ---- Step 3: History ----
@@ -2089,15 +2072,10 @@ def _print_human(report: dict, lang: str = "fr") -> None:
         for o in synth:
             print(f"  - {loc(o)}")
 
-    pid_sug = output.get("pid_suggestions") or {}
     flt_sug = output.get("filter_suggestions") or []
-    if pid_sug or flt_sug:
-        print("\n=== Tuning suggestions ===")
-    if pid_sug:
-        print("\nPID:")
-        for axis, txt in pid_sug.items():
-            print(f"  [{axis}] {loc(txt)}")
     noise = output.get("noise_spectrum") or {}
+    if noise.get("peaks") or flt_sug:
+        print("\n=== Filtering ===")
     if noise.get("peaks"):
         print(f"\nNoise PSD ({noise['axis']} gyro, 0 dB = noise floor):")
         for pk in noise["peaks"]:

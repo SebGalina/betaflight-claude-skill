@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] — 2026-06-02
+
+### Changed
+- Chirp HTML report polish, driven by real multi-pass use:
+  - Removed the deterministic per-axis **PID lead** (PID advice is left to the
+    model); the measured Bode/step **diagnosis** stays.
+  - **Overview** is tied to the latest pass and, for multi-pass, adds an
+    "evolution since pass 1" block (config changes + per-axis phase-margin and
+    overshoot deltas).
+  - **Multi-pass overlay**: passes are a **checkbox list** (show/hide each pass's
+    curves) instead of an inline legend.
+  - "Current settings" → context-aware **"Initial settings"** (single pass) /
+    **"latest pass"** (multi).
+  - Tuning guide recommends enabling **`vbat_sag_compensation`** for comparable
+    passes.
+  - Throttle × frequency map gets a **colour-scale legend** and a **how-to-read**
+    caption.
+
 ## [0.3.0] — 2026-06-02
 
 ### Changed
