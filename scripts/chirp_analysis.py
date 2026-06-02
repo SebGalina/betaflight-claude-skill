@@ -10,18 +10,29 @@ cross-spectral method, presented as a Bode plot (gain dB + phase deg) with the
 coherence as a per-frequency reliability gate, plus a throttle x frequency
 resonance map (the plant is non-stationary: resonances migrate with throttle).
 
-Firmware debug-field mapping (src/main/flight/pid.c, `#ifdef USE_CHIRP`):
-    debug[0] = 5000 * sinarg          phase of the excitation (0..2pi), for sine reconstruction
+Firmware debug-field mapping — TWO generations, auto-detected:
+
+  Legacy (commit 1fc6ad23, early USE_CHIRP):
+    debug[0] = 5000 * sinarg          phase of the excitation (0..2pi)
     debug[1] = active chirp axis      0=roll, 1=pitch, 2=yaw, -1=inactive
     debug[2] = 10 * fchirp            instantaneous chirp frequency in deci-Hz
-    debug[3] = 1000 * chirp           raw chirp excitation (pre phase-comp) — cross-correlation reference
+    debug[3] = 1000 * chirp           raw chirp excitation (pre phase-comp) — FRF reference
 
-We use gyroADC[i] as the output y and (by default) debug[3] as the input x — the
-firmware-labelled reference signal. Note debug[3] is taken *before* the lead-lag
-(phase-comp) shaping filter and the per-axis amplitude gain, so the measured FRF
-includes that known lead-lag; it is fine for diagnostic gain shape, resonance
-frequencies and the throttle map, and is flagged for fine phase-margin reading.
-Use --input-col setpoint to fall back to setpoint[i] when no debug channel is present.
+  Current (BF 2025.12.3-alpha, db7df6e48 and later): the CHIRP section logs ONLY
+    debug[0] = 5000 * sinarg.         debug[1..3] are gone (all zero in the log).
+
+So everything the legacy path read from debug[1..3] is reconstructed from debug[0]:
+  - excitation phase / pure sine : sin(debug[0]/5000)
+  - instantaneous frequency      : d/dt unwrap(debug[0]/5000) / 2pi   (replaces debug[2])
+  - active chirp axis            : argmax setpoint variance per window (replaces debug[1];
+                                   the chirp excites one axis at a time, so it dominates)
+
+We use gyroADC[i] as the output y. The input x defaults to the firmware reference
+debug[3] when that channel carries signal (legacy logs); otherwise — current
+firmware — it falls back to setpoint[i], the *calibrated* injected signal (deg/s),
+which yields a closed-loop FRF that sits near 0 dB at low frequency so the phase
+margin and 0 dB crossover are readable. --input-col debug0 forces the reconstructed
+unit sine (shape only, uncalibrated gain); --input-col setpoint forces setpoint[i].
 
 Requires: numpy, scipy, pandas  (no plotting libs — the --html report is self-contained)
 
@@ -39,6 +50,7 @@ import json
 import subprocess
 import sys
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
 import numpy as np
@@ -53,9 +65,16 @@ THROTTLE_COL = "rcCommand[3]"
 AXES = ["roll", "pitch", "yaw"]
 GYRO_COL = "gyroADC[{}]"
 SETPOINT_COL = "setpoint[{}]"
-CHIRP_AXIS_COL = "debug[1]"     # 0=roll 1=pitch 2=yaw -1=inactive
-CHIRP_FREQ_COL = "debug[2]"     # deci-Hz
-DEFAULT_INPUT_COL = "debug[3]"  # raw chirp excitation x1000 (cross-correlation reference)
+CHIRP_AXIS_COL = "debug[1]"     # 0=roll 1=pitch 2=yaw -1=inactive (legacy only)
+CHIRP_FREQ_COL = "debug[2]"     # deci-Hz (legacy only)
+DEFAULT_INPUT_COL = "debug[3]"  # raw chirp excitation x1000 (legacy FRF reference)
+PHASE_COL = "debug[0]"          # 5000 * sinarg — always present under debug_mode=CHIRP
+PHASE_SCALE = 5000.0            # debug[0] = 5000 * sinarg (phase 0..2pi)
+
+# Reconstruction-mode (current firmware) axis segmentation by setpoint energy
+ENERGY_WIN_S = 0.3             # sliding window for per-axis energy labelling
+ENERGY_STD_FLOOR = 2.0        # min setpoint std (deg/s) to call a window "excited"
+ENERGY_DOMINANCE = 1.8        # excited axis must exceed the runner-up by this factor
 
 # Analysis defaults
 DEFAULT_FMIN = 1.0
@@ -106,44 +125,121 @@ def _auto_nperseg(fs: float) -> int:
 # Axis segmentation + input column resolution
 # ---------------------------------------------------------------------------
 
-def _resolve_input_col(df: pd.DataFrame, requested: str, axis_idx: int) -> str | None:
-    """Map the --input-col request to an actual column for this axis.
+def _col_has_signal(df: pd.DataFrame, col: str) -> bool:
+    """True if the column exists and is not flat (carries actual data, not all-zero)."""
+    if col not in df.columns:
+        return False
+    v = df[col].to_numpy(float)
+    return float(np.ptp(v)) > 0.0 and float(np.std(v)) > 0.0
 
-    "setpoint" / "debug[N]" / explicit names are accepted. Falls back to
-    setpoint[i] if the requested debug channel is missing (chirp adds onto setpoint).
+
+def _has_axis_flag(df: pd.DataFrame) -> bool:
+    """True if debug[1] carries a real per-axis flag (legacy firmware), not a flat 0."""
+    return CHIRP_AXIS_COL in df.columns and int(df[CHIRP_AXIS_COL].nunique()) > 1
+
+
+def _reconstruct_exc(df: pd.DataFrame) -> tuple[np.ndarray | None, np.ndarray | None]:
+    """Reconstruct the excitation sine and active mask from debug[0] = 5000*sinarg.
+
+    Returns (exc, active) or (None, None) if debug[0] is absent/flat.
     """
-    if requested == "setpoint":
-        col = SETPOINT_COL.format(axis_idx)
-        return col if col in df.columns else None
-    if requested in df.columns:
-        return requested
-    # requested debug channel absent -> fall back to setpoint
-    fallback = SETPOINT_COL.format(axis_idx)
-    return fallback if fallback in df.columns else None
+    if not _col_has_signal(df, PHASE_COL):
+        return None, None
+    d0 = df[PHASE_COL].to_numpy(float)
+    return np.sin(d0 / PHASE_SCALE), d0 != 0.0
 
 
-def _axis_mask(df: pd.DataFrame, axis_idx: int) -> np.ndarray:
-    """Rows where the chirp is exciting this axis.
+def _inst_freq(df: pd.DataFrame, fs: float) -> np.ndarray | None:
+    """Instantaneous chirp frequency (Hz) from the unwrapped debug[0] phase.
 
-    Prefers the firmware axis flag debug[1]; if absent, falls back to a
-    setpoint-energy heuristic (rows where this axis carries most of the motion).
+    Replaces debug[2] on current firmware. Sawtooth resets between sub-sweeps
+    produce gradient spikes; clip to [0, Nyquist] and treat 0 as inactive.
     """
-    if CHIRP_AXIS_COL in df.columns:
-        return df[CHIRP_AXIS_COL].to_numpy() == axis_idx
-    # Fallback: no debug[1] -> use the whole flying window for every axis.
-    if THROTTLE_COL in df.columns:
-        return df[THROTTLE_COL].to_numpy() > THROTTLE_IDLE
-    return np.ones(len(df), dtype=bool)
+    if not _col_has_signal(df, PHASE_COL):
+        return None
+    phase = df[PHASE_COL].to_numpy(float) / PHASE_SCALE
+    f = np.gradient(np.unwrap(phase), 1.0 / fs) / (2.0 * np.pi)
+    return np.clip(f, 0.0, fs / 2.0)
 
 
-def _swept_band(df: pd.DataFrame, mask: np.ndarray, fmin: float, fmax: float) -> tuple[float, float]:
-    """Restrict the band to the frequencies actually swept, from debug[2] (deci-Hz)."""
-    if CHIRP_FREQ_COL in df.columns and mask.any():
+def _label_axes_by_energy(df: pd.DataFrame, active: np.ndarray, fs: float) -> np.ndarray:
+    """Per-sample active-axis labels (0/1/2, -1=none) from setpoint energy.
+
+    No debug[1] on current firmware: the chirp drives one axis at a time, so the
+    excited axis carries far more setpoint variance than the (pilot-centred) others.
+    Energy beats correlation-with-exc, which decorrelates at the top of the sweep.
+    """
+    n = len(df)
+    labels = np.full(n, -1, dtype=int)
+    cols = [SETPOINT_COL.format(a) for a in range(3)]
+    if any(c not in df.columns for c in cols):
+        return labels
+    sp = [df[c].to_numpy(float) for c in cols]
+    win = max(1, int(ENERGY_WIN_S * fs))
+    hop = max(1, win // 2)
+    for s in range(0, max(1, n - win), hop):
+        sl = slice(s, s + win)
+        if active[sl].mean() < 0.5:
+            continue
+        v = [float(sp[a][sl].std()) for a in range(3)]
+        a = int(np.argmax(v))
+        if v[a] > ENERGY_STD_FLOOR and v[a] > ENERGY_DOMINANCE * sorted(v)[1]:
+            labels[sl] = a
+    return labels
+
+
+def _swept_band(df: pd.DataFrame, mask: np.ndarray, fmin: float, fmax: float,
+                finst: np.ndarray | None = None) -> tuple[float, float]:
+    """Restrict the band to the frequencies actually swept on this axis.
+
+    Legacy: from debug[2] (deci-Hz). Current firmware: from the reconstructed
+    instantaneous frequency `finst`, using robust 2nd/98th percentiles to shrug off
+    the sawtooth-reset spikes.
+    """
+    mask = np.asarray(mask)
+    if _col_has_signal(df, CHIRP_FREQ_COL) and mask.any():
         f = df.loc[mask, CHIRP_FREQ_COL].to_numpy(float) / 10.0
         f = f[f > 0]
         if f.size:
             return max(fmin, float(np.min(f))), min(fmax, float(np.max(f)))
+    if finst is not None and mask.any():
+        f = finst[mask]
+        f = f[f > 0]
+        if f.size:
+            lo = max(fmin, float(np.percentile(f, 2)))
+            hi = min(fmax, float(np.percentile(f, 98)))
+            if hi > lo:
+                return lo, hi
     return fmin, fmax
+
+
+def _resolve_input(df: pd.DataFrame, exc: np.ndarray | None, requested: str,
+                   axis_idx: int, mask: np.ndarray) -> tuple[np.ndarray | None, str | None]:
+    """Resolve the FRF input x for this axis as a (values, label) pair.
+
+    Priority:
+      --input-col debug0   -> reconstructed unit sine sin(debug[0]/5000) (shape only)
+      --input-col setpoint -> setpoint[i] (calibrated, deg/s)
+      explicit column      -> that column if present
+      default (debug[3])   -> debug[3] when it carries signal (legacy);
+                              otherwise setpoint[i] (current firmware fallback)
+    """
+    mask = np.asarray(mask)
+    spcol = SETPOINT_COL.format(axis_idx)
+
+    def take(col):
+        return df.loc[mask, col].to_numpy(float)
+
+    if requested == "debug0":
+        return (exc[mask], "sin(debug[0]/5000)") if exc is not None else (None, None)
+    if requested == "setpoint":
+        return (take(spcol), spcol) if spcol in df.columns else (None, None)
+    if requested != DEFAULT_INPUT_COL and requested in df.columns:
+        return take(requested), requested
+    if requested == DEFAULT_INPUT_COL and _col_has_signal(df, DEFAULT_INPUT_COL):
+        return take(DEFAULT_INPUT_COL), DEFAULT_INPUT_COL
+    # default debug channel empty -> calibrated setpoint
+    return (take(spcol), spcol) if spcol in df.columns else (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -163,6 +259,65 @@ def _frf(x: np.ndarray, y: np.ndarray, fs: float, nperseg: int, regularize: floa
     gain_db = 20.0 * np.log10(np.abs(H) + 1e-12)
     phase_deg = np.degrees(np.unwrap(np.angle(H)))
     return f, gain_db, phase_deg, Cxy
+
+
+def _step_response(setpoint: np.ndarray, gyro: np.ndarray, fs: float, band_fmax: float = 200.0,
+                   horizon_ms: float = 150.0, npts: int = 160) -> dict:
+    """Time-domain step response of setpoint -> gyro (same Welch H(f) as the Bode, via IFFT).
+
+    The closed-loop H(f) is coherence-weighted and band-limited (smooth Hann taper above the
+    swept band) BEFORE the IFFT — otherwise the incoherent high-frequency content injects
+    spurious ringing and overshoot that contradicts the phase margin.
+
+    Returns {"t_ms": [...], "y": [...], "metrics": {...}} or {} if unusable. The step is
+    normalised to 1.0 at steady state so axes / passes are directly comparable.
+    """
+    sp = sp_signal.detrend(setpoint.astype(float))
+    gy = sp_signal.detrend(gyro.astype(float))
+    # window ~0.5 s: long enough to both resolve the ~20 Hz crossover (df ~2 Hz) and to hold the
+    # full settling transient (nperseg/fs is the step's time span).
+    nperseg = int(2 ** round(np.log2(fs * 0.5)))
+    nperseg = max(1024, min(nperseg, 8192, len(sp)))
+    f, Pxx = sp_signal.welch(sp, fs=fs, nperseg=nperseg, window="hann")
+    _, Pxy = sp_signal.csd(sp, gy, fs=fs, nperseg=nperseg, window="hann")
+    _, Cxy = sp_signal.coherence(sp, gy, fs=fs, nperseg=nperseg, window="hann")
+    reg = 1e-5 * float(np.max(np.abs(Pxx))) if np.max(np.abs(Pxx)) > 0 else 1e-5
+    H = Pxy / (Pxx + reg)
+    # weight: soft coherence gate (Wiener-like) * Hann taper across the top of the swept band
+    w = np.clip((Cxy - 0.3) / 0.6, 0.0, 1.0)
+    fcut = max(60.0, min(band_fmax, fs / 2.0))
+    f0 = 0.6 * fcut
+    taper = np.where(f <= f0, 1.0,
+                     np.where(f >= fcut, 0.0, 0.5 * (1.0 + np.cos(np.pi * (f - f0) / (fcut - f0)))))
+    h = np.fft.irfft(H * w * taper, n=nperseg)
+    step = np.cumsum(h) / fs
+    n = len(step)
+    ss = float(np.mean(step[int(0.7 * n):]))
+    if abs(ss) < 1e-9:
+        return {}
+    step = step / ss
+    t_ms = np.arange(n) * 1000.0 / fs
+    keep = t_ms <= horizon_ms
+    t_ms, step = t_ms[keep], step[keep]
+    if t_ms.size < 4:
+        return {}
+    # metrics on the kept window
+    peak = float(np.max(step))
+    overshoot = round((peak - 1.0) * 100.0, 1) if peak > 1.0 else 0.0
+    i10 = int(np.argmax(step >= 0.1)); i90 = int(np.argmax(step >= 0.9))
+    rise = round(float(t_ms[i90] - t_ms[i10]), 1) if i90 > i10 > 0 else None
+    i50 = int(np.argmax(step >= 0.5))
+    delay = round(float(t_ms[i50]), 1) if i50 > 0 else None
+    out = np.where(np.abs(step - 1.0) > 0.02)[0]
+    settle = round(float(t_ms[min(int(out[-1]) + 1, len(t_ms) - 1)]), 1) if len(out) else round(float(t_ms[0]), 1)
+    # downsample for the payload
+    s = max(1, len(t_ms) // npts)
+    return {
+        "t_ms": [round(float(v), 1) for v in t_ms[::s]],
+        "y": [round(float(v), 3) for v in step[::s]],
+        "metrics": {"overshoot_pct": overshoot, "rise_ms": rise,
+                    "delay_ms": delay, "settle_ms": settle, "peak": round(peak, 3)},
+    }
 
 
 def _gain_peaks(freqs, gain_db, coh, fmin, fmax) -> list[dict]:
@@ -211,41 +366,88 @@ def _phase_margin(freqs, gain_db, phase_deg, coh, fmin, fmax):
     return round(fco, 1), round(margin, 1)
 
 
-def _diagnose(peaks, phase_margin, fmin, fmax) -> list[str]:
+def _diagnose(peaks, phase_margin, fmin, fmax) -> list[dict]:
+    """Bode diagnosis hints, each as a {fr, en} pair."""
     hints = []
     fco, margin = phase_margin
     for p in peaks[:3]:
-        f = p["freq_hz"]
+        f, pr = p["freq_hz"], p["prominence_db"]
         if f < 80:
-            hints.append(
-                f"Gain bump at {f:.0f} Hz (+{p['prominence_db']:.0f} dB) -> closed-loop "
-                f"overshoot; this is the P/D region — back off P (or add D) if it exceeds ~3 dB."
-            )
+            hints.append({
+                "fr": f"Bosse de gain à {f:.0f} Hz (+{pr:.0f} dB) → overshoot en boucle fermée ; "
+                      f"c'est la zone P/D — réduire P (ou ajouter du D) si elle dépasse ~3 dB.",
+                "en": f"Gain bump at {f:.0f} Hz (+{pr:.0f} dB) → closed-loop overshoot; this is the "
+                      f"P/D region — back off P (or add D) if it exceeds ~3 dB.",
+            })
         else:
-            hints.append(
-                f"Sharp gain peak at {f:.0f} Hz (+{p['prominence_db']:.0f} dB) -> resonance; "
-                f"target it with a dynamic/static notch, not by changing PID gains."
-            )
+            hints.append({
+                "fr": f"Pic de gain marqué à {f:.0f} Hz (+{pr:.0f} dB) → résonance ; à traiter avec "
+                      f"un notch (dynamique/statique), pas en changeant les gains PID.",
+                "en": f"Sharp gain peak at {f:.0f} Hz (+{pr:.0f} dB) → resonance; target it with a "
+                      f"dynamic/static notch, not by changing PID gains.",
+            })
     if margin is not None:
         if margin <= 0:
-            verdict = "UNSTABLE — phase past -180 deg while gain >= 0 dB"
+            vfr, ven = "INSTABLE — phase au-delà de -180° avec gain ≥ 0 dB", "UNSTABLE — phase past -180° while gain ≥ 0 dB"
         elif margin >= 30:
-            verdict = "healthy"
+            vfr, ven = "sain", "healthy"
         elif margin >= 15:
-            verdict = "marginal"
+            vfr, ven = "limite", "marginal"
         else:
-            verdict = "low"
-        hints.append(
-            f"Phase margin ~{margin:.0f} deg at the {fco:.0f} Hz 0 dB crossover ({verdict}). "
-            f"Below ~30 deg the loop rings; reduce gains or add filtering."
-        )
+            vfr, ven = "faible", "low"
+        hints.append({
+            "fr": f"Marge de phase ~{margin:.0f}° au crossover 0 dB de {fco:.0f} Hz ({vfr}). "
+                  f"Sous ~30° la boucle sonne ; réduire les gains ou ajouter du filtrage.",
+            "en": f"Phase margin ~{margin:.0f}° at the {fco:.0f} Hz 0 dB crossover ({ven}). "
+                  f"Below ~30° the loop rings; reduce gains or add filtering.",
+        })
     else:
-        hints.append(
-            "No 0 dB gain crossover inside the coherent band — either the loop stays below "
-            "0 dB (conservative tune) or coherence is too low to read the margin."
-        )
+        hints.append({
+            "fr": "Pas de crossover 0 dB dans la bande cohérente — soit la boucle reste sous 0 dB "
+                  "(tune conservateur), soit la cohérence est trop basse pour lire la marge.",
+            "en": "No 0 dB gain crossover inside the coherent band — either the loop stays below "
+                  "0 dB (conservative tune) or coherence is too low to read the margin.",
+        })
     if not peaks:
-        hints.append("Gain is flat in the coherent band — no overshoot bump or resonance stands out.")
+        hints.append({
+            "fr": "Gain plat dans la bande cohérente — aucune bosse d'overshoot ni résonance ne ressort.",
+            "en": "Gain is flat in the coherent band — no overshoot bump or resonance stands out.",
+        })
+    return hints
+
+
+def _step_diagnosis(m: dict) -> list[dict]:
+    """Step-response interpretation (overshoot / rise / settling), each as a {fr, en} pair."""
+    if not m:
+        return []
+    hints = []
+    ov = m.get("overshoot_pct") or 0.0
+    rise = m.get("rise_ms")
+    settle = m.get("settle_ms")
+    if ov >= 25:
+        hints.append({
+            "fr": f"Overshoot ~{ov:.0f}% : fort dépassement → P trop haut ou D insuffisant/trop filtré "
+                  f"(rebond, propwash probable). Cohérent avec une marge de phase faible.",
+            "en": f"Overshoot ~{ov:.0f}%: large overshoot → P too high or D too low/over-filtered "
+                  f"(bounce-back, likely propwash). Consistent with a low phase margin.",
+        })
+    elif ov >= 10:
+        hints.append({
+            "fr": f"Overshoot ~{ov:.0f}% : dépassement modéré, acceptable mais réductible (un peu plus "
+                  f"de D ou un peu moins de P).",
+            "en": f"Overshoot ~{ov:.0f}%: moderate, acceptable but reducible (a touch more D or a "
+                  f"touch less P).",
+        })
+    else:
+        hints.append({
+            "fr": f"Overshoot ~{ov:.0f}% : réponse bien amortie.",
+            "en": f"Overshoot ~{ov:.0f}%: well-damped response.",
+        })
+    if rise is not None:
+        hints.append({
+            "fr": f"Temps de montée ~{rise:.0f} ms" + (f", établissement ~{settle:.0f} ms." if settle else "."),
+            "en": f"Rise time ~{rise:.0f} ms" + (f", settling ~{settle:.0f} ms." if settle else "."),
+        })
     return hints
 
 
@@ -308,6 +510,101 @@ def _throttle_map(df: pd.DataFrame, fs: float, axis_idx: int, fmin: float, fmax:
 
 
 # ---------------------------------------------------------------------------
+# Gyro noise spectrum (PSD in dB) — raw vs filtered, for the filtering decision
+# ---------------------------------------------------------------------------
+
+NOISE_PEAK_PROM_DB = 3.0       # a noise peak must rise this far above the local floor
+NOISE_OK_DB = -10.0            # filtered noise peaks below this are considered acceptable
+
+
+def _noise_spectrum(df: pd.DataFrame, fs: float, axis_idx: int, quiet_mask: np.ndarray,
+                    fmin: float = 10.0, fmax: float | None = None) -> dict:
+    """Gyro PSD (dB) over a chirp-free window: raw (gyroUnfilt) vs filtered (gyroADC).
+
+    During the chirp the gyro is full of excitation across the whole band, which masks the
+    real noise floor — so we measure over the *quiet* window (flying, this axis not excited).
+    Both curves are normalised so the strongest component reads 0 dB; motor/frame noise peaks
+    then read as negative dB, and the NOISE_OK_DB (-10 dB) line is a filtering-decision guide.
+    """
+    gcol = GYRO_COL.format(axis_idx)
+    ucol = f"gyroUnfilt[{axis_idx}]"
+    if gcol not in df.columns:
+        return {}
+    fmax = fmax or fs / 2.0 * 0.98
+    m = np.asarray(quiet_mask)
+    if int(m.sum()) < 2048:
+        return {}
+    nperseg = int(min(4096, 2 ** int(np.log2(int(m.sum())))))
+    nperseg = max(1024, nperseg)
+
+    def psd(col):
+        sig = sp_signal.detrend(df.loc[m, col].to_numpy(float))
+        f, pxx = sp_signal.welch(sig, fs=fs, nperseg=min(nperseg, len(sig)), window="hann")
+        return f, 10.0 * np.log10(pxx + 1e-10)
+
+    has_unfilt = ucol in df.columns
+    f, raw = psd(ucol if has_unfilt else gcol)
+    _, filt = psd(gcol)
+    sel = (f >= fmin) & (f <= fmax)
+    f, raw, filt = f[sel], raw[sel], filt[sel]
+    if f.size < 8:
+        return {}
+    ref = float(np.max(raw))               # strongest component -> 0 dB reference
+    raw = raw - ref
+    filt = filt - ref
+
+    peaks = []
+    band = f >= 70.0
+    if band.sum() > 5:
+        fb, rb = f[band], raw[band]
+        dfd = float(np.median(np.diff(fb))) or 1.0
+        idx, props = sp_signal.find_peaks(rb, prominence=NOISE_PEAK_PROM_DB, distance=max(1, int(15.0 / dfd)))
+        for k, i in enumerate(idx):
+            j = int(np.argmin(np.abs(f - fb[i])))
+            peaks.append({"freq_hz": round(float(fb[i]), 0), "db": round(float(rb[i]), 1),
+                          "db_filt": round(float(filt[j]), 1),
+                          "prom_db": round(float(props["prominences"][k]), 1)})
+        peaks.sort(key=lambda p: p["db"], reverse=True)
+        peaks = peaks[:6]
+
+    step = max(1, len(f) // 400)
+    return {
+        "axis": AXES[axis_idx], "has_unfilt": bool(has_unfilt),
+        "freqs": [round(float(v), 1) for v in f[::step]],
+        "raw_db": [round(float(v), 1) for v in raw[::step]],
+        "filt_db": [round(float(v), 1) for v in filt[::step]],
+        "peaks": peaks,
+    }
+
+
+def _noise_suggestions(noise: dict) -> list[dict]:
+    """Filtering leads from the noise PSD peaks, judged against the -10 dB guide ({fr, en})."""
+    if not noise:
+        return []
+    peaks = noise.get("peaks") or []
+    out = []
+    if not peaks:
+        out.append({
+            "fr": "Plancher de bruit propre (aucun pic >70 Hz au-dessus du seuil) : marge pour "
+                  "assouplir le filtrage (gyro/D-term plus hauts, Q plus bas) et gagner en réactivité.",
+            "en": "Clean noise floor (no >70 Hz peak above threshold): room to loosen filtering "
+                  "(higher gyro/D-term, lower Q) and gain responsiveness."})
+        return out
+    for p in peaks:
+        f, raw, flt = p["freq_hz"], p["db"], p["db_filt"]
+        if flt <= NOISE_OK_DB:
+            vfr = f"après filtres {flt:.0f} dB (sous -10 dB → acceptable, marge pour réduire le filtrage à cette fréquence)"
+            ven = f"{flt:.0f} dB after filters (below -10 dB → acceptable, room to reduce filtering here)"
+        else:
+            vfr = f"après filtres {flt:.0f} dB (au-dessus de -10 dB → garder/renforcer le filtrage ; vérifier dyn_notch/RPM)"
+            ven = f"{flt:.0f} dB after filters (above -10 dB → keep/strengthen filtering; check dyn_notch/RPM)"
+        out.append({
+            "fr": f"Pic de bruit {f:.0f} Hz : {raw:.0f} dB brut, {vfr}.",
+            "en": f"Noise peak {f:.0f} Hz: {raw:.0f} dB raw, {ven}."})
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Main analysis
 # ---------------------------------------------------------------------------
 
@@ -328,37 +625,68 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
     if nperseg is None:
         nperseg = _auto_nperseg(fs)
 
+    # Detect firmware generation and build reconstruction aids once.
+    has_flag = _has_axis_flag(df)
+    exc, active = _reconstruct_exc(df)
+    finst = _inst_freq(df, fs)
+    labels = None
+    if not has_flag and active is not None:
+        labels = _label_axes_by_energy(df, active, fs)
+    if not has_flag and labels is None and active is None:
+        print("Warning: no debug[1] axis flag and no debug[0] phase channel — "
+              "cannot segment chirp axes. Was the log recorded with debug_mode=CHIRP?",
+              file=sys.stderr)
+    elif not has_flag:
+        print("Note: current-firmware chirp log (debug[1..3] empty) — segmenting axes "
+              "by setpoint energy from debug[0]; FRF input falls back to calibrated "
+              "setpoint[i].", file=sys.stderr)
+
     results: dict = {}
     primary_axis_idx = None
     primary_n = 0
-    warned_fallback = False
 
     for i, axis in enumerate(AXES):
         if axes_filter and axis not in axes_filter:
             continue
         gcol = GYRO_COL.format(i)
-        xcol = _resolve_input_col(df, input_col, i)
-        if gcol not in df.columns or xcol is None:
+        if gcol not in df.columns:
             continue
-        if (input_col != "setpoint" and input_col not in df.columns
-                and xcol == SETPOINT_COL.format(i) and not warned_fallback):
-            print(f"Note: input column '{input_col}' not in log; falling back to "
-                  f"setpoint[i]. Re-log with debug_mode=CHIRP for the firmware "
-                  f"reference signal (cleaner FRF).", file=sys.stderr)
-            warned_fallback = True
-        mask = _axis_mask(df, i)
-        if mask.sum() < 512:
+
+        # Axis mask: legacy debug[1] flag, else energy labels, else whole flying window.
+        if has_flag:
+            mask = df[CHIRP_AXIS_COL].to_numpy() == i
+        elif labels is not None:
+            mask = labels == i
+        elif active is not None:
+            mask = active
+        elif THROTTLE_COL in df.columns:
+            mask = df[THROTTLE_COL].to_numpy() > THROTTLE_IDLE
+        else:
+            mask = np.ones(len(df), dtype=bool)
+        if int(mask.sum()) < 512:
             continue
-        if mask.sum() > primary_n:
+
+        x, xcol = _resolve_input(df, exc, input_col, i, mask)
+        if x is None:
+            continue
+        if int(mask.sum()) > primary_n:
             primary_n, primary_axis_idx = int(mask.sum()), i
 
-        x = df.loc[mask, xcol].to_numpy(float)
-        y = df.loc[mask, gcol].to_numpy(float)
-        a_fmin, a_fmax = _swept_band(df, mask, fmin, fmax)
+        y = df.loc[np.asarray(mask), gcol].to_numpy(float)
+        a_fmin, a_fmax = _swept_band(df, mask, fmin, fmax, finst)
 
         freqs, gain_db, phase_deg, coh = _frf(x, y, fs, nperseg)
         peaks = _gain_peaks(freqs, gain_db, coh, a_fmin, a_fmax)
         fco, margin = _phase_margin(freqs, gain_db, phase_deg, coh, a_fmin, a_fmax)
+
+        # Step response from the calibrated setpoint -> gyro (time-domain companion to the Bode).
+        step = {}
+        spcol = SETPOINT_COL.format(i)
+        if spcol in df.columns:
+            # closed-loop bandwidth is a few × the crossover; cap the step band well below the
+            # full swept range so high-frequency noise doesn't fake ringing in the transient.
+            sb = min(a_fmax, max(120.0, 6.0 * fco)) if fco else min(a_fmax, 150.0)
+            step = _step_response(df.loc[np.asarray(mask), spcol].to_numpy(float), y, fs, band_fmax=sb)
 
         fb, gb, pb, cb = _downsample(freqs, gain_db, phase_deg, coh, fmin=a_fmin, fmax=a_fmax)
         results[axis] = {
@@ -372,129 +700,886 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             "peaks": peaks,
             "phase_margin_deg": margin,
             "crossover_hz": fco,
+            "step": step,
             "diagnosis": _diagnose(peaks, (fco, margin), a_fmin, a_fmax),
+            "step_diagnosis": _step_diagnosis(step.get("metrics", {})) if step else [],
         }
 
     throttle_map = {}
+    noise = {}
     if primary_axis_idx is not None:
         throttle_map = _throttle_map(df, fs, primary_axis_idx, fmin, fmax)
+        # Noise PSD over the chirp-free window for this axis (when it is NOT being excited).
+        if labels is not None:
+            quiet = labels != primary_axis_idx
+        elif active is not None:
+            quiet = ~active
+        else:
+            quiet = np.ones(len(df), dtype=bool)
+        if THROTTLE_COL in df.columns:
+            quiet = quiet & (df[THROTTLE_COL].to_numpy() > THROTTLE_IDLE)
+        noise = _noise_spectrum(df, fs, primary_axis_idx, quiet, fmin=10.0, fmax=fmax)
 
-    return results, throttle_map
+    return results, throttle_map, noise
+
+
+# ---------------------------------------------------------------------------
+# Tuning config (read from the blackbox header) + recommendation engine
+# ---------------------------------------------------------------------------
+
+_LPF_TYPES = {"0": "PT1", "1": "BIQUAD", "2": "PT2", "3": "PT3"}
+
+
+def _parse_header_config(bbl_path: Path) -> dict:
+    """Pull PID + filter settings from the blackbox header (the `H key:value` lines).
+
+    Returns {} for CSV input or when the header is unreadable — suggestions then
+    degrade to curve-only (no PID/filter cross-reference).
+    """
+    try:
+        raw = bbl_path.read_bytes()[:65536].decode("latin1", "replace")
+    except OSError:
+        return {}
+    h: dict[str, str] = {}
+    for line in raw.split("\n"):
+        if not line.startswith("H "):
+            continue
+        k, _, v = line[2:].partition(":")
+        if v:
+            h[k.strip()] = v.strip()
+    if "rollPID" not in h:
+        return {}
+
+    def ints(key, n=None):
+        try:
+            vals = [int(float(x)) for x in h[key].split(",")]
+        except (KeyError, ValueError):
+            return None
+        return vals[:n] if n else vals
+
+    cfg: dict = {"pids": {}}
+    for axis, key in (("roll", "rollPID"), ("pitch", "pitchPID"), ("yaw", "yawPID")):
+        p = ints(key, 3)
+        if p:
+            cfg["pids"][axis] = p
+    cfg["d_max"] = ints("d_max", 3)
+    g1 = ints("gyro_lpf1_dyn_hz")
+    cfg["gyro_lpf1"] = {"dyn": g1, "static": ints("gyro_lpf1_static_hz"),
+                        "type": _LPF_TYPES.get(h.get("gyro_lpf1_type"), h.get("gyro_lpf1_type"))}
+    cfg["gyro_lpf2"] = {"static": ints("gyro_lpf2_static_hz"),
+                        "type": _LPF_TYPES.get(h.get("gyro_lpf2_type"), h.get("gyro_lpf2_type"))}
+    d1 = ints("dterm_lpf1_dyn_hz")
+    cfg["dterm_lpf1"] = {"dyn": d1, "static": ints("dterm_lpf1_static_hz"),
+                         "type": _LPF_TYPES.get(h.get("dterm_lpf1_type"), h.get("dterm_lpf1_type"))}
+    cfg["dterm_lpf2"] = {"static": ints("dterm_lpf2_static_hz"),
+                         "type": _LPF_TYPES.get(h.get("dterm_lpf2_type"), h.get("dterm_lpf2_type"))}
+    dn_min = (ints("dyn_notch_min_hz") or [None])[0]
+    dn_max = (ints("dyn_notch_max_hz") or [None])[0]
+    cfg["dyn_notch"] = {"count": (ints("dyn_notch_count") or [None])[0],
+                        "q": (ints("dyn_notch_q") or [None])[0],
+                        "min": dn_min, "max": dn_max}
+    cfg["rpm_harmonics"] = (ints("rpm_filter_harmonics") or [0])[0]
+    return cfg
+
+
+def _psd_resonances(throttle_map: dict) -> list[dict]:
+    """Resonances in the throttle-averaged gyro PSD, flagged if they migrate with throttle.
+
+    The throttle map is the curve behind the filtering advice: a peak that grows /
+    shifts with throttle is motor/desync (RPM filter, dyn notch); a fixed peak is a
+    frame resonance (static notch).
+    """
+    freqs = throttle_map.get("freqs")
+    levels = throttle_map.get("levels_db")
+    if not freqs or not levels:
+        return []
+    f = np.asarray(freqs, float)
+    arr = np.array([[np.nan if v is None else v for v in row] for row in levels], float)
+    mean_psd = np.nanmean(arr, axis=0)
+    if not np.isfinite(mean_psd).any():
+        return []
+    # only look above ~70 Hz: below that is the closed-loop band, not a filter target
+    lo = f >= 70.0
+    if lo.sum() < 5:
+        return []
+    fb, mb = f[lo], mean_psd[lo]
+    df = float(np.median(np.diff(fb))) or 1.0
+    idx, props = sp_signal.find_peaks(mb, prominence=6.0, distance=max(1, int(20.0 / df)))
+    out = []
+    nrows = arr.shape[0]
+    for k, i in enumerate(idx):
+        gi = np.where(f == fb[i])[0]
+        col = int(gi[0]) if gi.size else None
+        migrates = False
+        if col is not None and nrows >= 4:
+            half = nrows // 2
+            win = slice(max(0, col - 3), col + 4)
+            low_pk = np.nanargmax(np.nanmean(arr[:half, win], axis=0)) if np.isfinite(arr[:half, win]).any() else 0
+            high_pk = np.nanargmax(np.nanmean(arr[half:, win], axis=0)) if np.isfinite(arr[half:, win]).any() else 0
+            migrates = abs(int(low_pk) - int(high_pk)) >= 2
+        out.append({"freq_hz": round(float(fb[i]), 0),
+                    "prominence_db": round(float(props["prominences"][k]), 1),
+                    "migrates": bool(migrates)})
+    out.sort(key=lambda p: p["prominence_db"], reverse=True)
+    return out[:5]
+
+
+def _filter_suggestions(throttle_map: dict, cfg: dict) -> list[dict]:
+    """Filtering leads, each tied to a measured resonance frequency (evidence for the curve)."""
+    res = _psd_resonances(throttle_map)
+    dn = cfg.get("dyn_notch") or {}
+    nmin, nmax = dn.get("min"), dn.get("max")
+    cnt, q = dn.get("count"), dn.get("q")
+    sug = []
+    for r in res:
+        f, pr = r["freq_hz"], r["prominence_db"]
+        ofr = ("migre avec le throttle → moteur/desync (RPM filter, dyn notch)" if r["migrates"]
+               else "stable en throttle → résonance de frame (notch statique)")
+        oen = ("migrates with throttle → motor/desync (RPM filter, dyn notch)" if r["migrates"]
+               else "throttle-stable → frame resonance (static notch)")
+        if nmin is not None and nmax is not None and nmin <= f <= nmax:
+            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}. Dans la plage dyn_notch "
+                  f"({nmin}-{nmax} Hz, ×{cnt}, Q={q}) : si elle persiste, augmenter dyn_notch_count ou "
+                  f"dyn_notch_q, et vérifier le RPM filter.")
+            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}. Inside the dyn_notch range "
+                  f"({nmin}-{nmax} Hz, ×{cnt}, Q={q}): if it persists, raise dyn_notch_count or "
+                  f"dyn_notch_q, and check the RPM filter.")
+        elif nmax is not None and f > nmax:
+            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}, AU-DESSUS de dyn_notch_max ({nmax} Hz) "
+                  f"→ non filtrée. Piste : relever dyn_notch_max_hz vers ~{int(f + 50)}, ou baisser "
+                  f"gyro_lpf1 si bruit moteur large.")
+            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}, ABOVE dyn_notch_max ({nmax} Hz) → "
+                  f"unfiltered. Lead: raise dyn_notch_max_hz toward ~{int(f + 50)}, or lower gyro_lpf1 "
+                  f"if broadband motor noise.")
+        elif nmin is not None and f < nmin:
+            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}, SOUS dyn_notch_min ({nmin} Hz). "
+                  f"Piste : baisser dyn_notch_min_hz vers ~{max(60, int(f - 20))}.")
+            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}, BELOW dyn_notch_min ({nmin} Hz). "
+                  f"Lead: lower dyn_notch_min_hz toward ~{max(60, int(f - 20))}.")
+        else:
+            fr = f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}."
+            en = f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}."
+        sug.append({"freq_hz": f, "fr": fr, "en": en})
+    if not sug:
+        sug.append({"freq_hz": None,
+                    "fr": (f"Aucune résonance marquée (>70 Hz) dans la carte throttle : le filtrage actuel "
+                           f"(dyn_notch ×{cnt} Q={q}, RPM filter ×{cfg.get('rpm_harmonics')}) paraît suffisant. "
+                           f"Marge possible pour assouplir (Q ou count plus bas) et réduire le retard de phase "
+                           f"si les marges de phase le permettent."),
+                    "en": (f"No prominent resonance (>70 Hz) in the throttle map: current filtering "
+                           f"(dyn_notch ×{cnt} Q={q}, RPM filter ×{cfg.get('rpm_harmonics')}) looks sufficient. "
+                           f"Room to loosen it (lower Q or count) to cut phase lag if the phase margins allow.")})
+    return sug
+
+
+def _pid_suggestions(axes: dict, cfg: dict) -> dict:
+    """Per-axis PID leads from the phase margin, read against the current P/D — {fr, en} each."""
+    out: dict = {}
+    pids = cfg.get("pids") or {}
+    for axis, d in axes.items():
+        m = d.get("phase_margin_deg")
+        fco = d.get("crossover_hz")
+        p = pids.get(axis)
+        P, D = (p[0], p[2]) if p else (None, None)
+        pd = f"P={P}, D={D}" if p else "PID ?"
+        if m is None:
+            out[axis] = {
+                "fr": f"Pas de crossover 0 dB dans la bande cohérente — tune conservateur ou signal trop bruité. ({pd})",
+                "en": f"No 0 dB crossover in the coherent band — conservative tune or too-noisy signal. ({pd})"}
+            continue
+        at = f"@ {fco:.0f} Hz" if fco else ""
+        if m <= 5:
+            tf = f" (essayer P {P}→~{int(round(P*0.85))})" if P else ""
+            te = f" (try P {P}→~{int(round(P*0.85))})" if P else ""
+            out[axis] = {
+                "fr": f"⚠ Marge {m:.0f}° {at} : boucle au bord de l'oscillation / ring. Piste : baisser P{tf} "
+                      f"et/ou D ({D}), ou renforcer le filtrage D-term (dterm_lpf1 plus bas). À valider en vol. ({pd})",
+                "en": f"⚠ Margin {m:.0f}° {at}: loop on the edge of oscillation / ringing. Lead: lower P{te} "
+                      f"and/or D ({D}), or strengthen D-term filtering (lower dterm_lpf1). Flight-test it. ({pd})"}
+        elif m < 20:
+            tf = f" (~{P}→{int(round(P*0.9))})" if P else ""
+            out[axis] = {
+                "fr": f"Marge faible {m:.0f}° {at}. Piste : réduire légèrement P{tf} ou ajouter du filtrage ; "
+                      f"surveiller propwash. ({pd})",
+                "en": f"Low margin {m:.0f}° {at}. Lead: slightly reduce P{tf} or add filtering; watch propwash. ({pd})"}
+        elif m < 35:
+            out[axis] = {
+                "fr": f"Marge correcte mais limite {m:.0f}° {at} : tune sain, peu de changement. ({pd})",
+                "en": f"OK-but-limited margin {m:.0f}° {at}: healthy tune, little to change. ({pd})"}
+        elif m < 55:
+            out[axis] = {"fr": f"Marge saine {m:.0f}° {at}. ({pd})", "en": f"Healthy margin {m:.0f}° {at}. ({pd})"}
+        else:
+            tf = f" (P {P}→~{int(round(P*1.12))})" if P else ""
+            out[axis] = {
+                "fr": f"Grande marge {m:.0f}° {at} → réponse possiblement molle. Piste : augmenter P{tf} pour "
+                      f"plus de réactivité si le ressenti est mou ; surveiller bruit/chaleur moteur. ({pd})",
+                "en": f"Large margin {m:.0f}° {at} → possibly sluggish response. Lead: raise P{tf} for more "
+                      f"sharpness if it feels soft; watch motor noise/heat. ({pd})"}
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Multi-pass history: each chirp re-fly is appended and overlaid for before/after
+# ---------------------------------------------------------------------------
+
+MAX_OVERLAY_PASSES = 8   # keep the full file, but only render the last N passes
+
+
+def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
+    """Run the analysis on one log and package it as a self-contained 'pass'."""
+    axes_filter = [args.axis] if args.axis else None
+    results, throttle_map, noise = analyse(df, fs, args.input_col, axes_filter,
+                                           fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg)
+    config = _parse_header_config(path) if path.suffix.lower() in (".bbl", ".bfl") else {}
+    nyq = fs / 2.0
+    return {
+        "timestamp": datetime.now().isoformat(timespec="seconds"),
+        "file": path.name,
+        "sample_rate_hz": round(fs),
+        "input_col": args.input_col,
+        "band_hz": [args.fmin, round(min(args.fmax, nyq * 0.98), 1)],
+        "config": config,
+        "axes": results,
+        "throttle_map": throttle_map,
+        "noise_spectrum": noise,
+        "filter_suggestions": _filter_suggestions(throttle_map, config) if config else [],
+        "noise_suggestions": _noise_suggestions(noise),
+        "pid_suggestions": _pid_suggestions(results, config) if config else {},
+    }
+
+
+def _load_history(path: Path) -> list:
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("passes", [])
+    except (OSError, ValueError):
+        return []
+
+
+def _save_history(path: Path, passes: list) -> None:
+    try:
+        path.write_text(json.dumps({"passes": passes}), encoding="utf-8")
+    except OSError as e:
+        print(f"Warning: could not write history {path}: {e}", file=sys.stderr)
+
+
+def _config_diff(prev: dict, cur: dict) -> str:
+    """Short human summary of what changed between two passes' tuning configs."""
+    if not prev or not cur:
+        return ""
+    changes = []
+    for ax in AXES:
+        a = (prev.get("pids") or {}).get(ax)
+        b = (cur.get("pids") or {}).get(ax)
+        if a and b and a != b:
+            for i, nm in enumerate(("P", "I", "D")):
+                if a[i] != b[i]:
+                    changes.append(f"{ax} {nm} {a[i]}→{b[i]}")
+    for name in ("gyro_lpf1", "dterm_lpf1"):
+        a = (prev.get(name) or {})
+        b = (cur.get(name) or {})
+        av, bv = a.get("dyn") or a.get("static"), b.get("dyn") or b.get("static")
+        if av is not None and bv is not None and av != bv:
+            changes.append(f"{name} {av}→{bv}")
+    a, b = (prev.get("dyn_notch") or {}), (cur.get("dyn_notch") or {})
+    for f in ("count", "q", "min", "max"):
+        if a.get(f) is not None and b.get(f) is not None and a.get(f) != b.get(f):
+            changes.append(f"dyn_notch.{f} {a.get(f)}→{b.get(f)}")
+    return ", ".join(changes)
+
+
+def _assemble_report(passes: list, lang: str = "fr") -> dict:
+    """Trim to the last MAX_OVERLAY_PASSES, attach pass numbers + config diffs, mark primary."""
+    shown = passes[-MAX_OVERLAY_PASSES:]
+    base = len(passes) - len(shown)
+    for k, p in enumerate(shown):
+        p["n"] = base + k + 1
+        p["ts"] = p.get("timestamp", "").replace("T", " ")
+        p["diff"] = _config_diff(shown[k - 1]["config"], p["config"]) if k > 0 else ""
+    return {"passes": shown, "primary_index": len(shown) - 1, "total_passes": len(passes),
+            "lang": lang, "_glossary": GLOSSARY, "_strings": STRINGS}
+
+
+# ---------------------------------------------------------------------------
+# Pedagogical glossary (FR/EN) — detailed tooltips for every technical term
+# ---------------------------------------------------------------------------
+
+GLOSSARY = {
+    "chirp": {
+        "fr": "Chirp : un signal sinusoïdal dont la fréquence balaie lentement du bas vers le haut "
+              "(ici ~0 à 500 Hz), injecté sur la consigne d'un axe. En mesurant comment le drone y "
+              "répond fréquence par fréquence, on obtient sa réponse en fréquence (Bode) — la "
+              "signature dynamique complète de la boucle de stabilisation.",
+        "en": "Chirp: a sine signal whose frequency slowly sweeps from low to high (here ~0 to "
+              "500 Hz), injected onto an axis' setpoint. Measuring how the drone responds frequency "
+              "by frequency gives its frequency response (Bode) — the full dynamic signature of the "
+              "stabilisation loop.",
+    },
+    "gain": {
+        "fr": "Gain (dB) : rapport entre le mouvement obtenu (gyro) et le mouvement demandé "
+              "(consigne), en décibels. 0 dB = le drone suit exactement la demande. Au-dessus de 0 dB "
+              "il en fait trop (surréaction/résonance), en dessous il atténue. Une bosse de gain = "
+              "tendance à osciller à cette fréquence.",
+        "en": "Gain (dB): ratio of the motion obtained (gyro) to the motion commanded (setpoint), in "
+              "decibels. 0 dB = the drone tracks the command exactly. Above 0 dB it overreacts "
+              "(overshoot/resonance), below it attenuates. A gain bump = tendency to oscillate there.",
+    },
+    "phase": {
+        "fr": "Phase (°) : le retard entre la demande et la réponse, en degrés. Plus la fréquence "
+              "monte, plus le retard s'accumule (filtres, inertie). Quand la phase atteint -180°, la "
+              "correction arrive en opposition : si le gain est encore ≥ 0 dB à ce point, la boucle "
+              "s'auto-entretient et oscille.",
+        "en": "Phase (°): the lag between command and response, in degrees. The higher the frequency, "
+              "the more lag accumulates (filters, inertia). When phase reaches -180°, the correction "
+              "arrives in opposition: if gain is still ≥ 0 dB there, the loop self-sustains and oscillates.",
+    },
+    "phase_margin": {
+        "fr": "Marge de phase : de combien de degrés on est encore au-dessus de -180° à l'endroit où "
+              "le gain croise 0 dB. C'est la réserve de stabilité. >45° = sain et amorti ; 30-45° = "
+              "correct ; 15-30° = limite, ça commence à rebondir ; <15° ou négatif = la boucle sonne. "
+              "Baisser P/D ou filtrer redonne de la marge.",
+        "en": "Phase margin: how many degrees you are still above -180° at the point where gain crosses "
+              "0 dB. It is the stability reserve. >45° = healthy and damped; 30-45° = fine; 15-30° = "
+              "marginal, starts to bounce; <15° or negative = the loop rings. Lowering P/D or adding "
+              "filtering restores margin.",
+    },
+    "crossover": {
+        "fr": "Crossover 0 dB : la fréquence où le gain passe sous 0 dB. C'est en gros la bande "
+              "passante de l'axe — jusqu'où le drone suit fidèlement les ordres. Plus elle est haute, "
+              "plus la réponse est vive, mais plus il faut de marge de phase pour rester stable.",
+        "en": "0 dB crossover: the frequency where gain drops below 0 dB. Roughly the axis bandwidth — "
+              "how far the drone tracks commands faithfully. Higher = sharper response, but it needs "
+              "more phase margin to stay stable.",
+    },
+    "coherence": {
+        "fr": "Cohérence (0 à 1) : à quel point la réponse mesurée est réellement causée par "
+              "l'excitation chirp, et non par du bruit/vibrations. 1 = mesure fiable. En dessous de "
+              "~0.6 la courbe de gain/phase n'est pas fiable à cette fréquence — on l'affiche en grisé. "
+              "La cohérence chute naturellement en haute fréquence.",
+        "en": "Coherence (0 to 1): how much of the measured response is really caused by the chirp "
+              "excitation rather than noise/vibration. 1 = trustworthy. Below ~0.6 the gain/phase curve "
+              "is unreliable at that frequency — shown greyed out. Coherence naturally falls at high "
+              "frequency (weaker signal).",
+    },
+    "resonance": {
+        "fr": "Résonance : un pic d'énergie marqué à une fréquence précise, dû au cadre, aux pales ou "
+              "aux moteurs. Si elle remonte dans la boucle, elle fait vibrer/chauffer. On la traite par "
+              "du filtrage (notch), PAS en touchant les PID — baisser les gains pour masquer une "
+              "résonance dégrade le pilotage pour rien.",
+        "en": "Resonance: a sharp energy peak at a specific frequency, from the frame, props or motors. "
+              "If it feeds into the loop it causes vibration/heat. Treat it with filtering (a notch), "
+              "NOT by changing PIDs — lowering gains to mask a resonance degrades handling for nothing.",
+    },
+    "gyro_lpf": {
+        "fr": "Gyro lowpass (LPF) : filtre passe-bas sur le signal du gyroscope, avant tout calcul PID. "
+              "Il enlève le bruit haute fréquence (moteurs/vibrations). Trop bas, il ajoute du retard de "
+              "phase et déstabilise ; trop haut, il laisse passer le bruit dans les moteurs (chaleur). "
+              "'dyn' = la coupure suit le throttle entre deux bornes.",
+        "en": "Gyro lowpass (LPF): a lowpass filter on the gyro signal, before any PID maths. It removes "
+              "high-frequency noise (motors/vibration). Too low it adds phase lag and destabilises; too "
+              "high it lets noise into the motors (heat). 'dyn' = the cutoff follows throttle between two "
+              "bounds.",
+    },
+    "dterm_lpf": {
+        "fr": "D-term lowpass : filtre passe-bas sur le terme dérivé (D) des PID. Le D amplifie fortement "
+              "le bruit, donc on le filtre plus que le reste. Souvent le filtre le plus critique : trop "
+              "haut → moteurs chauds et bruit ; trop bas → D mou et retard qui ramène du propwash. À "
+              "régler en priorité avec le RPM filter.",
+        "en": "D-term lowpass: a lowpass on the PID derivative (D) term. D strongly amplifies noise, so "
+              "it is filtered more than the rest. Often the most critical filter: too high → hot motors "
+              "and noise; too low → mushy D and lag that brings propwash back. Tune it first, alongside "
+              "the RPM filter.",
+    },
+    "dyn_notch": {
+        "fr": "Dynamic notch : filtres très étroits qui pistent en temps réel les pics de bruit "
+              "(résonances) et les coupent sans toucher au reste du spectre. 'count' = combien de pics "
+              "traqués, 'Q' = finesse (Q haut = encoche étroite, moins de retard), 'min/max' = plage "
+              "surveillée. C'est l'outil principal contre les résonances.",
+        "en": "Dynamic notch: very narrow filters that track noise peaks (resonances) in real time and "
+              "cut them without touching the rest of the spectrum. 'count' = how many peaks tracked, 'Q' "
+              "= sharpness (high Q = narrow notch, less lag), 'min/max' = the watched range. The main "
+              "tool against resonances.",
+    },
+    "rpm_filter": {
+        "fr": "RPM filter : utilise la vitesse réelle des moteurs (télémétrie ESC/DShot) pour placer des "
+              "encoches pile sur les harmoniques de rotation des hélices. Le filtre le plus efficace "
+              "contre le bruit moteur : bien réglé, il permet d'ouvrir les autres filtres (gyro/D-term "
+              "plus hauts) et donc de gagner en réactivité.",
+        "en": "RPM filter: uses real motor speed (ESC/DShot telemetry) to place notches exactly on the "
+              "props' rotation harmonics. The most effective filter against motor noise: when set right "
+              "it lets you open the other filters (higher gyro/D-term) and so gain responsiveness.",
+    },
+    "dmax": {
+        "fr": "D_max : valeur haute du terme D, atteinte seulement lors de mouvements brusques. Au repos "
+              "le D reste à sa valeur basse (D_min, le D des PID) pour limiter le bruit ; il monte vers "
+              "D_max sur les à-coups pour amortir. Si D_min = D_max, le D est fixe (pas de boost).",
+        "en": "D_max: the high value of the D term, reached only on sharp moves. At rest D stays at its "
+              "low value (D_min, the PID's D) to limit noise; it rises toward D_max on stick jabs to "
+              "damp. If D_min = D_max, D is fixed (no boost).",
+    },
+    "pid": {
+        "fr": "PID (P, I, D) : le cœur de la stabilisation. P = réactivité immédiate à l'erreur (trop "
+              "haut = oscillation rapide) ; I = tient la consigne dans la durée et contre le vent (trop "
+              "haut = rebond lent) ; D = amortit/anticipe (trop haut = bruit et chaleur). On les règle "
+              "APRÈS le filtrage, car les filtres changent la marge de phase disponible.",
+        "en": "PID (P, I, D): the heart of stabilisation. P = immediate reaction to error (too high = "
+              "fast oscillation); I = holds the setpoint over time and against wind (too high = slow "
+              "bounce); D = damps/anticipates (too high = noise and heat). Tune them AFTER filtering, "
+              "because filters change the available phase margin.",
+    },
+    "throttle_map": {
+        "fr": "Carte throttle × fréquence : spectre du gyro découpé par tranches de gaz. Les résonances "
+              "moteur migrent avec le régime — une raie qui se décale en montant le gaz est d'origine "
+              "moteur (RPM filter / dyn notch), une raie fixe est une résonance de cadre (notch statique).",
+        "en": "Throttle × frequency map: the gyro spectrum sliced by throttle. Motor resonances migrate "
+              "with rpm — a line that shifts as throttle rises is motor-borne (RPM filter / dyn notch), a "
+              "fixed line is a frame resonance (static notch).",
+    },
+    "step_response": {
+        "fr": "Réponse indicielle : la réaction de l'axe à un échelon de consigne, reconstruite depuis "
+              "la même mesure que le Bode. C'est le pendant temporel : on y lit l'overshoot (dépassement "
+              "%), le temps de montée et l'établissement. Un fort overshoot ≙ une marge de phase faible "
+              "sur le Bode ; les deux courbes racontent la même histoire.",
+        "en": "Step response: the axis' reaction to a step in setpoint, reconstructed from the same "
+              "measurement as the Bode. It is the time-domain companion: read off overshoot (%), rise "
+              "time and settling. A large overshoot ≙ a low phase margin on the Bode; both curves tell "
+              "the same story.",
+    },
+    "noise_psd": {
+        "fr": "Spectre de bruit (PSD, dB) : la densité de puissance du gyro en fonction de la fréquence, "
+              "mesurée hors chirp. Le pic le plus fort = 0 dB de référence ; les pics de bruit (moteur, "
+              "cadre) se lisent en dB sous ce repère. On compare le brut (gyroUnfilt, avant filtres) au "
+              "filtré (gyroADC) : l'écart = ce que les filtres enlèvent. Règle d'usage : un pic resté sous "
+              "~-10 dB après filtrage est acceptable → marge pour assouplir le filtrage.",
+        "en": "Noise spectrum (PSD, dB): the gyro power density vs frequency, measured outside the chirp. "
+              "The strongest peak = 0 dB reference; noise peaks (motor, frame) read in dB below it. Compare "
+              "raw (gyroUnfilt, pre-filter) to filtered (gyroADC): the gap = what the filters remove. Rule "
+              "of thumb: a peak staying below ~-10 dB after filtering is acceptable → room to loosen filtering.",
+    },
+    "propwash": {
+        "fr": "Propwash : les oscillations/secousses quand le drone retombe dans ses propres turbulences "
+              "(descentes rapides, sorties de virage). Souvent lié à un D mou ou trop filtré, ou à une "
+              "marge de phase faible : la boucle n'amortit pas assez vite.",
+        "en": "Propwash: the wobble/shaking when the drone falls back into its own turbulence (fast "
+              "descents, corner exits). Often tied to a mushy or over-filtered D, or a low phase margin: "
+              "the loop does not damp fast enough.",
+    },
+}
+
+# ---------------------------------------------------------------------------
+# UI strings (FR/EN) for the switchable report
+# ---------------------------------------------------------------------------
+
+STRINGS = {
+    "fr": {
+        "title": "Chirp — assistant de tuning", "lang_btn": "EN", "pass_word": "Passe",
+        "guide_h": "Guide de tuning",
+        "guide_order": "<b>Ordre recommandé :</b> on règle {filt} AVANT {pid}. Chaque filtre ajoute du retard "
+                       "de {phase} qui grignote la {pm} : régler les gains avant d'avoir figé le filtrage donne "
+                       "des PID qui ne tiendront plus ensuite. On nettoie donc le bruit et les {res} d'abord, "
+                       "puis on monte les gains.",
+        "guide_single": "📍 <b>Passe unique.</b> Si ce log a été pris juste après un reflash, les PID et filtres "
+                        "sont probablement aux <b>valeurs par défaut</b> : c'est ton point de référence (baseline). "
+                        "Applique les pistes de l'<b>Étape 1 (Filtrage)</b>, refais un vol en <code>debug_mode="
+                        "CHIRP</code>, puis compare — et seulement ensuite l'<b>Étape 2 (PID)</b>.",
+        "guide_multi": "📍 <b>{n} passes accumulées.</b> Les courbes de l'Étape 2 superposent toutes les passes "
+                       "pour voir l'effet de tes changements (diffs de config en Étape 3). La passe la plus récente "
+                       "sert de référence pour les pistes ci-dessous.",
+        "guide_add": "➕ Pour ajouter une passe : modifie filtres/PID, refais un log chirp, puis relance "
+                     "<code>chirp_analysis.py nouveau.bbl --html report.html</code> — il s'ajoute à l'historique.",
+        "cfg_h": "Réglages actuels", "cfg_sub": "(extraits du log — passe de référence)",
+        "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
+        "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
+        "noise_h": "Spectre de bruit gyro (PSD, dB)",
+        "noise_cap": "{psd} — brut (gyroUnfilt) vs filtré (gyroADC), hors chirp. Pic le plus fort = 0 dB ; "
+                     "repère −10 dB = pic acceptable après filtrage.",
+        "noise_cap_nounfilt": "{psd} — gyro filtré (gyroUnfilt absent du log). Pic le plus fort = 0 dB.",
+        "leg_raw": "brut (unfilt)", "leg_filt": "filtré (gyroADC)", "leg_ok": "seuil −10 dB",
+        "step2_h": "PID", "step2_sub": "— après avoir figé le filtrage",
+        "overlay": "Courbes superposées :",
+        "bode_h": "Réponse en fréquence (Bode)", "step_h": "Réponse indicielle (temporel)",
+        "coh_cap": "{coh} — fiabilité de la mesure par fréquence (grisé si &lt; {gate})",
+        "lead_pid": "Piste PID :", "margin": "marge", "no_xover": "pas de crossover",
+        "step3_h": "Historique & comparaison",
+        "step3_single": "Une seule passe pour l'instant. Refais un log chirp après tes modifs : il s'empilera "
+                        "ici pour la comparaison avant/après.",
+        "step3_changes": "↳ changements vs passe précédente :",
+        "glossary_h": "Glossaire",
+        "w_filt": "le filtrage", "w_pid": "les PID", "w_phase": "phase",
+        "w_pm": "marge de stabilité", "w_res": "résonances",
+        "leg_gyro": "gyro lpf", "leg_dterm": "dterm lpf", "leg_notch": "plage dyn_notch", "leg_xover": "crossover 0 dB",
+        "metrics": "overshoot {ov}% · montée {rise} ms · établi {settle} ms",
+        "render_err": "⚠ Rendu interrompu : ",
+    },
+    "en": {
+        "title": "Chirp — tuning assistant", "lang_btn": "FR", "pass_word": "Pass",
+        "guide_h": "Tuning guide",
+        "guide_order": "<b>Recommended order:</b> set {filt} BEFORE {pid}. Every filter adds {phase} lag that "
+                       "eats into the {pm}: tuning gains before the filtering is frozen gives PIDs that won't "
+                       "hold afterwards. So clean up noise and {res} first, then raise the gains.",
+        "guide_single": "📍 <b>Single pass.</b> If this log was taken right after a reflash, the PIDs and filters "
+                        "are probably at their <b>defaults</b>: that's your baseline. Apply the <b>Step 1 "
+                        "(Filtering)</b> leads, re-fly in <code>debug_mode=CHIRP</code>, then compare — and only "
+                        "then <b>Step 2 (PID)</b>.",
+        "guide_multi": "📍 <b>{n} passes accumulated.</b> The Step 2 curves overlay every pass so you can see the "
+                       "effect of your changes (config diffs in Step 3). The most recent pass is the reference for "
+                       "the leads below.",
+        "guide_add": "➕ To add a pass: change filters/PID, re-fly a chirp log, then re-run "
+                     "<code>chirp_analysis.py new.bbl --html report.html</code> — it appends to the history.",
+        "cfg_h": "Current settings", "cfg_sub": "(read from the log — reference pass)",
+        "step1_h": "Filtering", "step1_sub": "— set this first",
+        "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
+        "noise_h": "Gyro noise spectrum (PSD, dB)",
+        "noise_cap": "{psd} — raw (gyroUnfilt) vs filtered (gyroADC), outside the chirp. Strongest peak = 0 dB; "
+                     "the −10 dB line = a peak acceptable after filtering.",
+        "noise_cap_nounfilt": "{psd} — filtered gyro (gyroUnfilt absent from the log). Strongest peak = 0 dB.",
+        "leg_raw": "raw (unfilt)", "leg_filt": "filtered (gyroADC)", "leg_ok": "−10 dB guide",
+        "step2_h": "PID", "step2_sub": "— after the filtering is frozen",
+        "overlay": "Overlaid curves:",
+        "bode_h": "Frequency response (Bode)", "step_h": "Step response (time domain)",
+        "coh_cap": "{coh} — per-frequency measurement reliability (greyed if &lt; {gate})",
+        "lead_pid": "PID lead:", "margin": "margin", "no_xover": "no crossover",
+        "step3_h": "History & comparison",
+        "step3_single": "Only one pass so far. Re-fly a chirp log after your changes: it will stack up here for "
+                        "before/after comparison.",
+        "step3_changes": "↳ changes vs previous pass:",
+        "glossary_h": "Glossary",
+        "w_filt": "filtering", "w_pid": "the PIDs", "w_phase": "phase",
+        "w_pm": "stability margin", "w_res": "resonances",
+        "leg_gyro": "gyro lpf", "leg_dterm": "dterm lpf", "leg_notch": "dyn_notch range", "leg_xover": "0 dB crossover",
+        "metrics": "overshoot {ov}% · rise {rise} ms · settle {settle} ms",
+        "render_err": "⚠ Render interrupted: ",
+    },
+}
 
 
 # ---------------------------------------------------------------------------
 # Self-contained HTML report (vanilla JS / <canvas>, no external dependencies)
 # ---------------------------------------------------------------------------
 
-def _html_report(output: dict, file_name: str) -> str:
-    payload = json.dumps(output)
+def _html_report(report: dict, file_name: str) -> str:
+    payload = json.dumps(report)
     # The renderer is intentionally dependency-free: a tiny canvas plotting engine.
     return f"""<!DOCTYPE html>
-<html lang="en"><head><meta charset="utf-8">
-<title>Chirp Bode report — {file_name}</title>
+<html><head><meta charset="utf-8">
+<title>Chirp report — {file_name}</title>
 <style>
-  body {{ font: 13px/1.4 system-ui, sans-serif; margin: 24px; background:#11141a; color:#dfe3ea; }}
-  h1 {{ font-size: 18px; }} h2 {{ font-size: 15px; margin: 24px 0 8px; color:#9ecbff; }}
-  .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px; margin-bottom:20px; background:#171b22; }}
+  body {{ font: 13px/1.5 system-ui, sans-serif; margin: 24px; background:#11141a; color:#dfe3ea; max-width:960px; }}
+  h1 {{ font-size: 19px; }} h2 {{ font-size: 15px; margin: 22px 0 8px; color:#9ecbff; }}
+  h3 {{ font-size: 13px; color:#8893a5; margin:14px 0 4px; text-transform:uppercase; letter-spacing:.5px; }}
+  .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px 14px; margin-bottom:18px; background:#171b22; }}
+  .step {{ border-left:3px solid #4fc3f7; }}
+  .step.pid {{ border-left-color:#ffd479; }}
+  .step.cmp {{ border-left-color:#80cbc4; }}
   canvas {{ display:block; background:#0d1016; border-radius:4px; margin:6px 0; }}
   .diag {{ color:#c9d2e0; }} .diag li {{ margin:2px 0; }}
   .meta {{ color:#8893a5; font-size:12px; }}
-  code {{ color:#ffd479; }}
+  .sugg {{ margin:8px 0 0; padding-left:18px; }} .sugg li {{ margin:3px 0; }}
+  .pid {{ color:#ffd479; margin:8px 0 0; }}
+  .step-d {{ color:#9cd0e0; margin:6px 0 0; }}
+  .filt li {{ color:#9ce0c0; }}
+  .cfg {{ color:#aab4c4; font-size:12px; line-height:1.8; }}
+  .legend {{ font-size:11px; color:#8893a5; margin:0 0 6px; }}
+  .legend span {{ margin-right:14px; white-space:nowrap; }}
+  .guide {{ background:#141c26; border:1px solid #28425c; }}
+  .guide b {{ color:#9ecbff; }}
+  .stepnum {{ display:inline-block; min-width:20px; height:20px; line-height:20px; text-align:center;
+             border-radius:50%; background:#28425c; color:#cfe3ff; font-weight:600; margin-right:6px; }}
+  .term {{ border-bottom:1px dotted #6b7689; cursor:help; position:relative; }}
+  .term:hover::after {{ content:attr(data-tip); position:absolute; left:0; top:1.5em; z-index:20;
+     width:340px; white-space:normal; background:#0b0e13; color:#e6eaf2; border:1px solid #3a4150;
+     border-radius:6px; padding:9px 11px; font:12px/1.55 system-ui; box-shadow:0 6px 18px rgba(0,0,0,.55); }}
+  .glos dt {{ color:#9ecbff; font-weight:600; margin-top:8px; }}
+  .glos dd {{ margin:2px 0 0; color:#c2cad6; }}
+  .swatch {{ display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:5px; vertical-align:middle; }}
+  .diff {{ color:#ffd479; }}
+  .langbtn {{ position:fixed; top:16px; right:16px; z-index:30; background:#28425c; color:#cfe3ff;
+     border:1px solid #3a5a78; border-radius:6px; padding:5px 12px; cursor:pointer; font:600 12px system-ui; }}
+  .twocol {{ display:flex; gap:14px; flex-wrap:wrap; }}
+  .twocol > div {{ flex:1 1 380px; }}
 </style></head><body>
-<h1>Chirp frequency-response report <span class="meta">— {file_name}</span></h1>
+<button id="langbtn" class="langbtn"></button>
+<h1 id="h1"></h1>
 <div id="root"></div>
 <script>
-const DATA = {payload};
+const FILE = {json.dumps(file_name)};
+const R = {payload};
+const GL = R._glossary || {{}};
+const STR = R._strings || {{}};
+const PASSES = R.passes || [];
+const PRIMARY = R.primary_index || 0;
+const PRI = PASSES[PRIMARY] || {{}};
+const CFG = PRI.config || {{}};
+const GATE = {COHERENCE_GATE};
+const PAL = ['#7686a0','#9ad','#80cbc4','#ba9cff','#f48fb1','#aed581','#ffb74d','#4fc3f7'];
 const W = 880, Hh = 150, PAD = 46;
-function mkCanvas(parent, h) {{
-  const c = document.createElement('canvas'); c.width = W; c.height = h;
-  parent.appendChild(c); return c;
-}}
+let LANG = R.lang || 'fr';
+window.addEventListener('error', e => {{
+  const d=document.createElement('pre'); d.style.color='#ff8a80';
+  d.textContent=(T('render_err'))+e.message+(e.lineno?(' ('+e.lineno+')'):'');
+  document.body.appendChild(d);
+}});
+function T(k) {{ const s=STR[LANG]||STR.fr||{{}}; return (k in s)? s[k] : k; }}
+function tip(k,label) {{ const g=GL[k]||{{}}; const t=(g[LANG]||g.fr||'').replace(/"/g,'&quot;');
+  return '<span class="term" data-tip="'+t+'">'+(label||k)+'</span>'; }}
+function loc(o) {{ return o ? (o[LANG]||o.fr||o.en||'') : ''; }}
+function passLabel(p) {{ return T('pass_word')+' '+p.n+' — '+p.ts+(p.file?(' ('+p.file+')'):''); }}
+function el(tag,cls,html) {{ const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e; }}
+function mkCanvas(parent,h) {{ const c=document.createElement('canvas'); c.width=W; c.height=h; parent.appendChild(c); return c; }}
 function lerp(v,a,b,A,B) {{ return A + (v-a)*(B-A)/((b-a)||1); }}
-function logx(f, fmin, fmax) {{ return lerp(Math.log10(f), Math.log10(fmin), Math.log10(fmax), PAD, W-12); }}
+function logx(f,fmin,fmax) {{ return lerp(Math.log10(f), Math.log10(fmin), Math.log10(fmax), PAD, W-12); }}
 function drawAxes(ctx,h,fmin,fmax,ymin,ymax,ylabel) {{
-  ctx.clearRect(0,0,W,h); ctx.strokeStyle='#2a2f3a'; ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
-  ctx.lineWidth=1;
-  // y grid
-  for (let k=0;k<=4;k++) {{ const yv=ymin+(ymax-ymin)*k/4; const y=lerp(yv,ymin,ymax,h-22,8);
+  ctx.clearRect(0,0,W,h); ctx.strokeStyle='#2a2f3a'; ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif'; ctx.lineWidth=1;
+  for (let k=0;k<=4;k++) {{ const yv=ymin+(ymax-ymin)*k/4, y=lerp(yv,ymin,ymax,h-22,8);
     ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke();
     ctx.fillText(yv.toFixed(ymax-ymin>=10?0:1), 4, y+3); }}
-  // x grid (decades)
-  const d0=Math.floor(Math.log10(fmin)), d1=Math.ceil(Math.log10(fmax));
-  for (let d=d0; d<=d1; d++) for (const m of [1,2,5]) {{
+  for (let d=Math.floor(Math.log10(fmin)); d<=Math.ceil(Math.log10(fmax)); d++) for (const m of [1,2,5]) {{
     const f=m*Math.pow(10,d); if (f<fmin||f>fmax) continue; const x=logx(f,fmin,fmax);
     ctx.strokeStyle='#20242e'; ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke();
     ctx.fillStyle='#8893a5'; ctx.fillText(f>=1000?(f/1000)+'k':f, x-6, h-8); }}
-  ctx.fillStyle='#9ecbff'; ctx.fillText(ylabel, PAD, 7+0); ctx.save();
+  ctx.fillStyle='#9ecbff'; ctx.fillText(ylabel, PAD, 7);
 }}
-function plotLine(ctx,h,F,Y,coh,fmin,fmax,ymin,ymax,color) {{
+function drawAxesLin(ctx,h,xmax,ymin,ymax,ylabel) {{
+  ctx.clearRect(0,0,W,h); ctx.strokeStyle='#2a2f3a'; ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif'; ctx.lineWidth=1;
+  for (let k=0;k<=4;k++) {{ const yv=ymin+(ymax-ymin)*k/4, y=lerp(yv,ymin,ymax,h-22,8);
+    ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke(); ctx.fillText(yv.toFixed(2), 4, y+3); }}
+  for (let k=0;k<=5;k++) {{ const xv=xmax*k/5, x=lerp(xv,0,xmax,PAD,W-12);
+    ctx.strokeStyle='#20242e'; ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke();
+    ctx.fillStyle='#8893a5'; ctx.fillText(xv.toFixed(0)+(k===5?' ms':''), x-6, h-8); }}
+  ctx.fillStyle='#9ecbff'; ctx.fillText(ylabel, PAD, 7);
+}}
+function plotLine(ctx,h,F,Y,coh,fmin,fmax,ymin,ymax,color,opts) {{
+  opts=opts||{{}}; const lw=opts.lw||1.8;
   for (let i=1;i<F.length;i++) {{
-    const trusted = coh[i]>={COHERENCE_GATE} && coh[i-1]>={COHERENCE_GATE};
-    ctx.strokeStyle = trusted ? color : 'rgba(120,130,150,0.35)';
-    ctx.lineWidth = trusted ? 1.8 : 1;
+    const trusted = coh[i]>=GATE && coh[i-1]>=GATE;
+    ctx.globalAlpha = opts.dim ? 0.5 : 1;
+    ctx.strokeStyle = trusted ? color : (opts.dim?'rgba(120,130,150,0.15)':'rgba(120,130,150,0.35)');
+    ctx.lineWidth = trusted ? lw : 1;
     ctx.beginPath();
     ctx.moveTo(logx(F[i-1],fmin,fmax), lerp(Y[i-1],ymin,ymax,h-22,8));
     ctx.lineTo(logx(F[i],fmin,fmax),   lerp(Y[i],ymin,ymax,h-22,8));
     ctx.stroke();
   }}
+  ctx.globalAlpha=1;
 }}
-function hline(ctx,h,val,ymin,ymax,fmin,fmax,color,label) {{
+function plotLin(ctx,h,X,Y,xmax,ymin,ymax,color,opts) {{
+  opts=opts||{{}}; ctx.globalAlpha=opts.dim?0.5:1; ctx.strokeStyle=color; ctx.lineWidth=opts.lw||1.8;
+  ctx.beginPath();
+  for (let i=0;i<X.length;i++) {{ const px=lerp(X[i],0,xmax,PAD,W-12), py=lerp(Y[i],ymin,ymax,h-22,8);
+    i?ctx.lineTo(px,py):ctx.moveTo(px,py); }}
+  ctx.stroke(); ctx.globalAlpha=1;
+}}
+function hline(ctx,h,val,ymin,ymax,color,label) {{
   const y=lerp(val,ymin,ymax,h-22,8); ctx.strokeStyle=color; ctx.setLineDash([4,3]);
   ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke(); ctx.setLineDash([]);
   ctx.fillStyle=color; ctx.fillText(label, W-70, y-3);
 }}
+function vline(ctx,h,f,fmin,fmax,color,label) {{
+  if (!f || f<fmin || f>fmax) return;
+  const x=logx(f,fmin,fmax); ctx.strokeStyle=color; ctx.lineWidth=1; ctx.setLineDash([2,3]);
+  ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke(); ctx.setLineDash([]);
+  if (label) {{ ctx.fillStyle=color; ctx.fillText(label, x+2, 16); }}
+}}
+function vband(ctx,h,f0,f1,fmin,fmax,color) {{
+  if (!f0||!f1) return; const a=logx(Math.max(f0,fmin),fmin,fmax), b=logx(Math.min(f1,fmax),fmin,fmax);
+  if (b<=a) return; ctx.fillStyle=color; ctx.fillRect(a,8,b-a,h-30);
+}}
+function filterOverlay(ctx,h,fmin,fmax,xover) {{
+  if (CFG.dyn_notch) vband(ctx,h,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
+  if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ vline(ctx,h,CFG.gyro_lpf1.dyn[0],fmin,fmax,'#5a9bd4','gyroLPF'); vline(ctx,h,CFG.gyro_lpf1.dyn[1],fmin,fmax,'#5a9bd4',''); }}
+  if (CFG.dterm_lpf1 && CFG.dterm_lpf1.dyn) {{ vline(ctx,h,CFG.dterm_lpf1.dyn[0],fmin,fmax,'#d48fd4','dtermLPF'); vline(ctx,h,CFG.dterm_lpf1.dyn[1],fmin,fmax,'#d48fd4',''); }}
+  vline(ctx,h,xover,fmin,fmax,'#ff8a80','xover');
+}}
 const root=document.getElementById('root');
-for (const [axis,d] of Object.entries(DATA.axes)) {{
-  const box=document.createElement('div'); box.className='axis';
-  const t=document.createElement('h2'); t.textContent=axis.toUpperCase()+
-    '  ['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz, input '+d.input_col+', n='+d.n_samples+']';
-  box.appendChild(t); root.appendChild(box);
-  const F=d.freq, C=d.coherence, fmin=d.band_hz[0]||1, fmax=d.band_hz[1]||1000;
-  // gain
-  let g=mkCanvas(box,Hh).getContext('2d'); let gmin=Math.min(-12,...d.gain_db), gmax=Math.max(12,...d.gain_db);
-  drawAxes(g,Hh,fmin,fmax,gmin,gmax,'gain dB'); hline(g,Hh,0,gmin,gmax,fmin,fmax,'#5a6273','0 dB');
-  plotLine(g,Hh,F,d.gain_db,C,fmin,fmax,gmin,gmax,'#4fc3f7');
-  // phase
-  let p=mkCanvas(box,Hh).getContext('2d');
-  drawAxes(p,Hh,fmin,fmax,-360,0,'phase °'); hline(p,Hh,-180,-360,0,fmin,fmax,'#ff8a80','-180°');
-  plotLine(p,Hh,F,d.phase_deg.map(v=>((v%360)+360)%360-360),C,fmin,fmax,-360,0,'#ba9cff');
-  // coherence
-  let ch=mkCanvas(box,Hh-40).getContext('2d');
-  drawAxes(ch,Hh-40,fmin,fmax,0,1,'coh'); hline(ch,Hh-40,{COHERENCE_GATE},0,1,fmin,fmax,'#7e8aa0','0.8');
-  plotLine(ch,Hh-40,F,C,C.map(_=>1),fmin,fmax,0,1,'#80cbc4');
-  // diagnosis
-  const ul=document.createElement('ul'); ul.className='diag';
-  for (const line of d.diagnosis) {{ const li=document.createElement('li'); li.textContent=line; ul.appendChild(li); }}
-  box.appendChild(ul);
-}}
-// throttle x frequency heatmap
-const tm=DATA.throttle_map;
-if (tm && tm.freqs && tm.freqs.length) {{
-  const box=document.createElement('div'); box.className='axis';
-  const t=document.createElement('h2'); t.textContent='Throttle × frequency resonance map ('+tm.axis+' gyro)';
-  box.appendChild(t); root.appendChild(box);
-  const rows=tm.levels_db.length, cols=tm.freqs.length;
-  const flat=tm.levels_db.flat().filter(v=>v!==null);
-  const lo=Math.min(...flat), hi=Math.max(...flat);
-  const cw=W-PAD-12, chh=22, H2=rows*chh+30;
-  const cv=mkCanvas(box,H2); const ctx=cv.getContext('2d');
-  ctx.clearRect(0,0,W,H2);
-  for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {{
-    const v=tm.levels_db[r][c]; if (v===null) continue;
-    const tnorm=(v-lo)/((hi-lo)||1);
-    const R=Math.round(255*Math.min(1,tnorm*1.6)), G=Math.round(120*Math.max(0,1-Math.abs(tnorm-0.5)*2)), B=Math.round(255*(1-tnorm));
-    ctx.fillStyle='rgb('+R+','+G+','+B+')';
-    ctx.fillRect(PAD+c*cw/cols, 8+(rows-1-r)*chh, cw/cols+1, chh);
+const single = R.total_passes<=1;
+
+function render() {{
+  root.innerHTML='';
+  document.getElementById('h1').innerHTML = T('title')+' <span class="meta">— '+FILE+'</span>';
+  document.getElementById('langbtn').textContent = T('lang_btn');
+
+  // ---- Guide ----
+  {{
+    const g=el('div','axis guide'); let s='<h2>'+T('guide_h')+'</h2>';
+    s+='<p>'+T('guide_order')
+        .replace('{{filt}}',tip('gyro_lpf','<b>'+T('w_filt')+'</b>'))
+        .replace('{{pid}}',tip('pid','<b>'+T('w_pid')+'</b>'))
+        .replace('{{phase}}',tip('phase',T('w_phase')))
+        .replace('{{pm}}',tip('phase_margin',T('w_pm')))
+        .replace('{{res}}',tip('resonance',T('w_res')))+'</p>';
+    s+='<p>'+(single ? T('guide_single') : T('guide_multi').replace('{{n}}',R.total_passes))+'</p>';
+    s+='<p class=meta>'+T('guide_add')+'</p>';
+    g.innerHTML=s; root.appendChild(g);
   }}
-  ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
-  for (let r=0;r<rows;r++) ctx.fillText(tm.throttle_bins[r], 4, 8+(rows-1-r)*chh+14);
-  const fmin=tm.freqs[0], fmax=tm.freqs[cols-1];
-  for (let d=Math.floor(Math.log10(fmin));d<=Math.ceil(Math.log10(fmax));d++) for (const m of [1,2,5]) {{
-    const f=m*Math.pow(10,d); if (f<fmin||f>fmax) continue;
-    const x=PAD+(Math.log10(f)-Math.log10(fmin))/(Math.log10(fmax)-Math.log10(fmin))*cw;
-    ctx.fillText(f>=1000?(f/1000)+'k':f, x-6, H2-6); }}
-  ctx.fillStyle='#9ecbff'; ctx.fillText('throttle ↑   freq (Hz) →', PAD, H2-18);
+
+  // ---- Current settings ----
+  if (CFG.pids) {{
+    const cb=el('div','axis'); let s='<h2>'+T('cfg_h')+' <span class=meta>'+T('cfg_sub')+'</span></h2><div class=cfg>';
+    s+='<b>'+tip('pid','PID')+'</b> — '+Object.entries(CFG.pids).map(([a,v])=>a+' P'+v[0]+'/I'+v[1]+'/D'+v[2]).join(' &nbsp; ');
+    if (CFG.d_max) s+=' &nbsp; '+tip('dmax','D_max')+' '+CFG.d_max.join('/');
+    s+='<br>';
+    if (CFG.gyro_lpf1) s+='<b>'+tip('gyro_lpf','gyro')+'</b> lpf1 '+(CFG.gyro_lpf1.dyn?CFG.gyro_lpf1.dyn.join('–'):CFG.gyro_lpf1.static)+' Hz ('+CFG.gyro_lpf1.type+'), lpf2 '+(CFG.gyro_lpf2?CFG.gyro_lpf2.static:'?')+' Hz<br>';
+    if (CFG.dterm_lpf1) s+='<b>'+tip('dterm_lpf','D-term')+'</b> lpf1 '+(CFG.dterm_lpf1.dyn?CFG.dterm_lpf1.dyn.join('–'):CFG.dterm_lpf1.static)+' Hz, lpf2 '+(CFG.dterm_lpf2?CFG.dterm_lpf2.static:'?')+' Hz<br>';
+    if (CFG.dyn_notch) s+='<b>'+tip('dyn_notch','dyn_notch')+'</b> ×'+CFG.dyn_notch.count+' Q'+CFG.dyn_notch.q+' ['+CFG.dyn_notch.min+'–'+CFG.dyn_notch.max+' Hz] &nbsp; <b>'+tip('rpm_filter','RPM filter')+'</b> ×'+CFG.rpm_harmonics;
+    s+='</div>'; cb.innerHTML=s; root.appendChild(cb);
+  }}
+
+  // ---- Step 1: Filtering ----
+  {{
+    const box=el('div','axis step'); root.appendChild(box);
+    box.appendChild(el('h2',null,'<span class=stepnum>1</span>'+tip('gyro_lpf',T('step1_h'))+' '+T('step1_sub')));
+    const tm=PRI.throttle_map;
+    if (tm && tm.freqs && tm.freqs.length) {{
+      box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro)'));
+      const rows=tm.levels_db.length, cols=tm.freqs.length;
+      const flat=tm.levels_db.flat().filter(v=>v!==null);
+      const lo=Math.min(...flat), hi=Math.max(...flat);
+      const cw=W-PAD-12, chh=22, H2=rows*chh+30;
+      const ctx=mkCanvas(box,H2).getContext('2d'); ctx.clearRect(0,0,W,H2);
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {{
+        const v=tm.levels_db[r][c]; if (v===null) continue; const tn=(v-lo)/((hi-lo)||1);
+        ctx.fillStyle='rgb('+Math.round(255*Math.min(1,tn*1.6))+','+Math.round(120*Math.max(0,1-Math.abs(tn-0.5)*2))+','+Math.round(255*(1-tn))+')';
+        ctx.fillRect(PAD+c*cw/cols, 8+(rows-1-r)*chh, cw/cols+1, chh);
+      }}
+      ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
+      for (let r=0;r<rows;r++) ctx.fillText(tm.throttle_bins[r], 4, 8+(rows-1-r)*chh+14);
+      const fmin=tm.freqs[0], fmax=tm.freqs[cols-1];
+      for (let d=Math.floor(Math.log10(fmin));d<=Math.ceil(Math.log10(fmax));d++) for (const m of [1,2,5]) {{
+        const f=m*Math.pow(10,d); if (f<fmin||f>fmax) continue;
+        const x=PAD+(Math.log10(f)-Math.log10(fmin))/(Math.log10(fmax)-Math.log10(fmin))*cw;
+        ctx.fillText(f>=1000?(f/1000)+'k':f, x-6, H2-6); }}
+      ctx.fillStyle='#9ecbff'; ctx.fillText('throttle ↑   freq (Hz) →', PAD, H2-18);
+      const tmx=f=>PAD+(Math.log10(f)-Math.log10(fmin))/(Math.log10(fmax)-Math.log10(fmin))*cw;
+      const tvl=(f,col,lab)=>{{ if(!f||f<fmin||f>fmax)return; const x=tmx(f);
+        ctx.strokeStyle=col; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,H2-26); ctx.stroke(); ctx.setLineDash([]);
+        if(lab){{ctx.fillStyle=col; ctx.fillText(lab,x+2,18);}} }};
+      if (CFG.dyn_notch) {{ tvl(CFG.dyn_notch.min,'#ffd479','dyn_notch'); tvl(CFG.dyn_notch.max,'#ffd479',''); }}
+      for (const su of (PRI.filter_suggestions||[])) tvl(su.freq_hz,'#ff8a80','rés');
+    }}
+
+    // noise spectrum (raw vs filtered PSD, dB) — drives the filtering decision
+    const ns=PRI.noise_spectrum;
+    if (ns && ns.freqs && ns.freqs.length) {{
+      box.appendChild(el('h3',null,tip('noise_psd',T('noise_h'))+' ('+ns.axis+' gyro)'));
+      const F=ns.freqs, fmin=Math.max(10,F[0]), fmax=F[F.length-1];
+      let lo=Math.max(-80,Math.min(-50,...ns.filt_db,...ns.raw_db)), hi=Math.max(3,...ns.raw_db);
+      const H3=180, nc=mkCanvas(box,H3).getContext('2d');
+      drawAxes(nc,H3,fmin,fmax,lo,hi,'dB');
+      if (CFG.dyn_notch) vband(nc,H3,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
+      if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ vline(nc,H3,CFG.gyro_lpf1.dyn[0],fmin,fmax,'#5a9bd4','gyroLPF'); vline(nc,H3,CFG.gyro_lpf1.dyn[1],fmin,fmax,'#5a9bd4',''); }}
+      hline(nc,H3,-10,lo,hi,'#ff8a80','-10 dB');
+      const ones=F.map(_=>1);
+      if (ns.has_unfilt) plotLine(nc,H3,F,ns.filt_db,ones,fmin,fmax,lo,hi,'#80cbc4',{{lw:1.6}});
+      plotLine(nc,H3,F,ns.raw_db,ones,fmin,fmax,lo,hi,'#4fc3f7',{{lw:1.8}});
+      nc.font='10px sans-serif'; let _lab=0;
+      for (const pk of (ns.peaks||[])) {{ if (pk.freq_hz<fmin||pk.freq_hz>fmax) continue;
+        const x=logx(pk.freq_hz,fmin,fmax), y=lerp(pk.db,lo,hi,H3-22,8);
+        nc.fillStyle='#ffd479'; nc.beginPath(); nc.arc(x,y,2.6,0,7); nc.fill();
+        if (pk.db >= -20) {{ const dy=(_lab++ %2)?12:-3;  // stagger to avoid overlap
+          nc.fillText(pk.freq_hz.toFixed(0)+'Hz '+pk.db.toFixed(0)+'dB', x+4, y+dy); }} }}
+      box.appendChild(el('div','legend',
+        (ns.has_unfilt?('<span style="color:#4fc3f7">— '+T('leg_raw')+'</span><span style="color:#80cbc4">— '+T('leg_filt')+'</span>'):'<span style="color:#4fc3f7">— gyro</span>')+
+        '<span style="color:#ff8a80">-- '+T('leg_ok')+'</span>'+
+        '<span style="color:#5a9bd4">│ '+tip('gyro_lpf','gyro lpf')+'</span>'+
+        '<span style="color:#ffd479">▮ '+tip('dyn_notch','dyn_notch')+'</span>'));
+      box.appendChild(el('div','legend',(ns.has_unfilt?T('noise_cap'):T('noise_cap_nounfilt')).replace('{{psd}}',tip('noise_psd','PSD'))));
+    }}
+
+    const fsug=PRI.filter_suggestions||[], nsug=PRI.noise_suggestions||[];
+    let s='<h3>'+tip('resonance',T('filt_h'))+'</h3><ul class="sugg filt">';
+    for (const x of fsug) s+='<li>'+loc(x)+'</li>';
+    for (const x of nsug) s+='<li>'+loc(x)+'</li>';
+    if (!fsug.length && !nsug.length) s+='<li>—</li>';
+    s+='</ul>'; box.appendChild(el('div',null,s));
+  }}
+
+  // ---- Step 2: PID (Bode + step response, all passes overlaid) ----
+  {{
+    const head=el('div','axis step pid'); root.appendChild(head);
+    head.appendChild(el('h2',null,'<span class=stepnum>2</span>'+tip('pid',T('step2_h'))+' '+T('step2_sub')));
+    head.appendChild(el('p','meta',T('overlay')+' '+PASSES.map((p,i)=>'<span class=swatch style="background:'+PAL[i%PAL.length]+'"></span>'+passLabel(p)).join(' &nbsp; ')));
+  }}
+  for (const axis of Object.keys(PRI.axes||{{}})) {{
+    const d=PRI.axes[axis]; if(!d||!d.freq) continue;
+    const box=el('div','axis'); root.appendChild(box);
+    const m=d.phase_margin_deg, fco=d.crossover_hz;
+    const mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'° @ '+(fco?fco.toFixed(0):'?')+' Hz');
+    box.appendChild(el('h2',null,axis.toUpperCase()+' <span class=meta>['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz] — '+mtxt+'</span>'));
+    const fmin=d.band_hz[0]||1, fmax=d.band_hz[1]||500;
+    const ser=PASSES.map((p,i)=>({{p:p.axes&&p.axes[axis], i:i, primary:i===PRIMARY}})).filter(o=>o.p&&o.p.freq);
+
+    box.appendChild(el('h3',null,tip('gain',T('bode_h'))));
+    let gAll=[]; ser.forEach(o=>gAll=gAll.concat(o.p.gain_db));
+    let gmin=Math.min(-12,...gAll), gmax=Math.max(12,...gAll);
+    let g=mkCanvas(box,Hh).getContext('2d');
+    drawAxes(g,Hh,fmin,fmax,gmin,gmax,'gain dB');
+    filterOverlay(g,Hh,fmin,fmax,fco);
+    hline(g,Hh,0,gmin,gmax,'#5a6273','0 dB');
+    for (const o of ser) plotLine(g,Hh,o.p.freq,o.p.gain_db,o.p.coherence,fmin,fmax,gmin,gmax,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
+    box.appendChild(el('div','legend',
+      '<span style="color:#5a9bd4">│ '+tip('gyro_lpf',T('leg_gyro'))+'</span>'+
+      '<span style="color:#d48fd4">│ '+tip('dterm_lpf',T('leg_dterm'))+'</span>'+
+      '<span style="color:#ffd479">▮ '+tip('dyn_notch',T('leg_notch'))+'</span>'+
+      '<span style="color:#ff8a80">│ '+tip('crossover',T('leg_xover'))+'</span>'));
+    let p=mkCanvas(box,Hh).getContext('2d');
+    drawAxes(p,Hh,fmin,fmax,-360,0,'phase °'); hline(p,Hh,-180,-360,0,'#ff8a80','-180°');
+    for (const o of ser) plotLine(p,Hh,o.p.freq,o.p.phase_deg.map(v=>((v%360)+360)%360-360),o.p.coherence,fmin,fmax,-360,0,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
+    box.appendChild(el('div','legend',T('coh_cap').replace('{{coh}}',tip('coherence','coh')).replace('{{gate}}',GATE.toFixed(1))));
+    let ch=mkCanvas(box,Hh-40).getContext('2d');
+    drawAxes(ch,Hh-40,fmin,fmax,0,1,'coh'); hline(ch,Hh-40,GATE,0,1,'#7e8aa0',GATE.toFixed(1));
+    for (const o of ser) plotLine(ch,Hh-40,o.p.freq,o.p.coherence,o.p.coherence.map(_=>1),fmin,fmax,0,1,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2:1.3}});
+
+    // step response (time domain)
+    const sser=ser.filter(o=>o.p.step && o.p.step.t_ms && o.p.step.t_ms.length);
+    if (sser.length) {{
+      box.appendChild(el('h3',null,tip('step_response',T('step_h'))));
+      let xmax=0, ymax=1.3; sser.forEach(o=>{{ xmax=Math.max(xmax,o.p.step.t_ms[o.p.step.t_ms.length-1]); ymax=Math.max(ymax,...o.p.step.y); }});
+      let st=mkCanvas(box,Hh).getContext('2d');
+      drawAxesLin(st,Hh,xmax,0,ymax,'step');
+      hline(st,Hh,1,0,ymax,'#5a6273','1.0');
+      for (const o of sser) plotLin(st,Hh,o.p.step.t_ms,o.p.step.y,xmax,0,ymax,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
+      const mt=d.step&&d.step.metrics;
+      if (mt) box.appendChild(el('div','legend',T('metrics').replace('{{ov}}',mt.overshoot_pct).replace('{{rise}}',mt.rise_ms==null?'–':mt.rise_ms).replace('{{settle}}',mt.settle_ms==null?'–':mt.settle_ms)));
+    }}
+
+    // diagnosis + step diagnosis + PID lead (reference pass)
+    const ul=el('ul','diag');
+    for (const line of (d.diagnosis||[])) ul.appendChild(el('li',null,loc(line)));
+    for (const line of (d.step_diagnosis||[])) ul.appendChild(el('li',null,loc(line)));
+    box.appendChild(ul);
+    if (PRI.pid_suggestions && PRI.pid_suggestions[axis])
+      box.appendChild(el('p','pid','<b>'+T('lead_pid')+'</b> '+loc(PRI.pid_suggestions[axis])));
+  }}
+
+  // ---- Step 3: History ----
+  {{
+    const box=el('div','axis step cmp'); root.appendChild(box);
+    box.appendChild(el('h2',null,'<span class=stepnum>3</span>'+T('step3_h')));
+    let s='<div class=cfg>';
+    PASSES.forEach((p,i)=>{{
+      s+='<div><span class=swatch style="background:'+PAL[i%PAL.length]+'"></span><b>'+passLabel(p)+'</b>';
+      const pd=p.config&&p.config.pids;
+      if (pd) s+=' <span class=meta>— P/D '+Object.entries(pd).map(([a,v])=>a[0]+' '+v[0]+'/'+v[2]).join(' ')+'</span>';
+      if (p.diff) s+='<br><span class=diff>'+T('step3_changes')+' '+p.diff+'</span>';
+      s+='</div>';
+    }});
+    if (PASSES.length<=1) s+='<p class=meta>'+T('step3_single')+'</p>';
+    s+='</div>'; box.appendChild(el('div',null,s));
+  }}
+
+  // ---- Glossary ----
+  {{
+    const order=['chirp','gain','phase','phase_margin','crossover','coherence','resonance',
+      'noise_psd','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','step_response','propwash'];
+    const box=el('div','axis'); root.appendChild(box); box.appendChild(el('h2',null,T('glossary_h')));
+    let s='<dl class=glos>';
+    for (const k of order) {{ const g=GL[k]; if (g && (g[LANG]||g.fr)) {{
+      const head=(g[LANG]||g.fr).split(/ : | — |: /)[0];
+      s+='<dt>'+head+'</dt><dd>'+(g[LANG]||g.fr)+'</dd>'; }} }}
+    s+='</dl>'; box.appendChild(el('div',null,s));
+  }}
 }}
+document.getElementById('langbtn').onclick=()=>{{ LANG = (LANG==='fr'?'en':'fr'); render(); }};
+render();
 </script></body></html>
 """
 
@@ -503,7 +1588,18 @@ if (tm && tm.freqs && tm.freqs.length) {{
 # Text summary
 # ---------------------------------------------------------------------------
 
-def _print_human(output: dict) -> None:
+def _print_human(report: dict, lang: str = "fr") -> None:
+    def loc(o):
+        return (o.get(lang) or o.get("fr") or o.get("en") or "") if isinstance(o, dict) else o
+
+    passes = report.get("passes") or []
+    if not passes:
+        print("No passes to report.")
+        return
+    output = passes[report.get("primary_index", len(passes) - 1)]
+    total = report.get("total_passes", len(passes))
+    if total > 1:
+        print(f"History     : {total} passes (showing latest as reference)")
     print(f"Sample rate : {output['sample_rate_hz']:,} Hz")
     print(f"Input column: {output['input_col']}")
     print(f"Band        : {output['band_hz'][0]:g}–{output['band_hz'][1]:g} Hz")
@@ -515,23 +1611,51 @@ def _print_human(output: dict) -> None:
     for axis, d in output["axes"].items():
         print(f"-- {axis.upper()} " + "-" * 30)
         print(f"  Input / band     : {d['input_col']}  [{d['band_hz'][0]:g}–{d['band_hz'][1]:g} Hz]  n={d['n_samples']}")
-        if d["peaks"]:
-            ps = ", ".join(f"{p['freq_hz']:.0f}Hz(+{p['prominence_db']:.0f}dB)" for p in d["peaks"][:5])
-            print(f"  Gain peaks       : {ps}")
-        else:
-            print("  Gain peaks       : none above threshold")
         if d["phase_margin_deg"] is not None:
             print(f"  Phase margin     : {d['phase_margin_deg']:.0f} deg @ {d['crossover_hz']:.0f} Hz")
         else:
             print("  Phase margin     : no 0 dB crossover in coherent band")
+        st = (d.get("step") or {}).get("metrics")
+        if st:
+            print(f"  Step response    : overshoot {st['overshoot_pct']}%  rise {st['rise_ms']} ms  settle {st['settle_ms']} ms")
         print()
         for hint in d["diagnosis"]:
-            print(f"  > {hint}")
+            print(f"  > {loc(hint)}")
+        for hint in d.get("step_diagnosis", []):
+            print(f"  > {loc(hint)}")
         print()
     tm = output.get("throttle_map") or {}
     if tm:
         print(f"Throttle map     : {tm['axis']} gyro, {len(tm['throttle_bins'])} throttle bins "
               f"× {len(tm['freqs'])} freqs (see --html / --json for the heatmap)")
+
+    pid_sug = output.get("pid_suggestions") or {}
+    flt_sug = output.get("filter_suggestions") or []
+    if pid_sug or flt_sug:
+        print("\n=== Tuning suggestions ===")
+    if pid_sug:
+        print("\nPID:")
+        for axis, txt in pid_sug.items():
+            print(f"  [{axis}] {loc(txt)}")
+    noise = output.get("noise_spectrum") or {}
+    if noise.get("peaks"):
+        print(f"\nNoise PSD ({noise['axis']} gyro, 0 dB = strongest component):")
+        for pk in noise["peaks"]:
+            print(f"  {pk['freq_hz']:.0f} Hz : {pk['db']:.0f} dB raw, {pk['db_filt']:.0f} dB filtered")
+
+    flt_all = flt_sug + (output.get("noise_suggestions") or [])
+    if flt_all:
+        print("\nFiltering:")
+        for s in flt_all:
+            print(f"  - {loc(s)}")
+
+    if len(passes) > 1:
+        print("\n=== Passes ===")
+        for p in passes:
+            label = f"Pass {p.get('n', '?')} — {p.get('ts', '')} ({p.get('file', '')})"
+            if p.get("diff"):
+                label += f"  [Δ {p['diff']}]"
+            print(f"  {label}")
 
 
 # ---------------------------------------------------------------------------
@@ -549,57 +1673,75 @@ def main():
     ap = argparse.ArgumentParser(
         description="Betaflight closed-loop chirp frequency-response (Bode + coherence) analyser"
     )
-    ap.add_argument("input", help=".bbl/.bfl log or decoded CSV from analyze_blackbox --csv")
+    ap.add_argument("input", nargs="+",
+                    help=".bbl/.bfl log(s) or decoded CSV. Several logs overlay as successive passes.")
     ap.add_argument("--axis", choices=AXES, help="Analyse a single axis (default: all excited axes)")
     ap.add_argument("--session", type=int, default=None, metavar="N",
                     help="Session index for multi-session logs")
     ap.add_argument("--input-col", default=DEFAULT_INPUT_COL, metavar="COL",
-                    help=f"Excitation input column (default {DEFAULT_INPUT_COL}; "
-                         f"'setpoint' uses setpoint[i]; falls back to setpoint[i] if absent)")
+                    help=f"Excitation input column (default {DEFAULT_INPUT_COL}, the legacy "
+                         f"firmware reference; auto-falls back to setpoint[i] when empty). "
+                         f"'setpoint' forces setpoint[i] (calibrated); 'debug0' forces the "
+                         f"reconstructed sine sin(debug[0]/5000) (shape only)")
     ap.add_argument("--fmin", type=float, default=DEFAULT_FMIN, metavar="HZ",
                     help=f"Lower edge of the analysis band (default {DEFAULT_FMIN:g})")
     ap.add_argument("--fmax", type=float, default=DEFAULT_FMAX, metavar="HZ",
                     help=f"Upper edge of the analysis band (default {DEFAULT_FMAX:g}, clamped to Nyquist)")
     ap.add_argument("--nperseg", type=int, default=None, metavar="N",
                     help="Welch window size in samples (default: auto, ~2 Hz resolution)")
+    ap.add_argument("--lang", choices=("fr", "en"), default="fr",
+                    help="Default language for the report (FR/EN switchable live in the HTML; "
+                         "this sets the initial language and the text-mode language)")
     ap.add_argument("--json", action="store_true", help="Output as JSON")
     ap.add_argument("--html", metavar="OUT", help="Write a self-contained HTML Bode report")
+    ap.add_argument("--history", metavar="FILE", default=None,
+                    help="History JSON to accumulate passes into (default: chirp_history.json next "
+                         "to the --html output, else in the working directory)")
+    ap.add_argument("--no-history", action="store_true",
+                    help="Do not read or write any history; report only the log(s) given now")
     args = ap.parse_args()
 
-    path = Path(args.input)
-    tmp_csv = None
-    if path.suffix.lower() in (".bbl", ".bfl"):
-        tmp_csv = _decode_bbl(path, args.session)
-        df = _load_csv(tmp_csv)
+    # Analyse each input log into a self-contained "pass".
+    new_passes = []
+    for raw in args.input:
+        path = Path(raw)
+        tmp_csv = None
+        try:
+            if path.suffix.lower() in (".bbl", ".bfl"):
+                tmp_csv = _decode_bbl(path, args.session)
+                df = _load_csv(tmp_csv)
+            else:
+                df = _load_csv(path)
+            fs = _sample_rate(df)
+            new_passes.append(_build_pass(path, df, fs, args))
+        finally:
+            if tmp_csv:
+                tmp_csv.unlink(missing_ok=True)
+
+    # History: accumulate unless disabled. The report shows the full (trimmed) history.
+    if args.no_history:
+        passes = new_passes
     else:
-        df = _load_csv(path)
-
-    try:
-        fs = _sample_rate(df)
-        axes_filter = [args.axis] if args.axis else None
-        results, throttle_map = analyse(
-            df, fs, args.input_col, axes_filter,
-            fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg,
-        )
-        nyq = fs / 2.0
-        output = {
-            "sample_rate_hz": round(fs),
-            "input_col": args.input_col,
-            "band_hz": [args.fmin, round(min(args.fmax, nyq * 0.98), 1)],
-            "axes": results,
-            "throttle_map": throttle_map,
-        }
-
-        if args.html:
-            Path(args.html).write_text(_html_report(output, path.name), encoding="utf-8")
-            print(f"Report written to {args.html}", file=sys.stderr)
-        elif args.json:
-            print(json.dumps(output, indent=2))
+        if args.history:
+            hist_path = Path(args.history)
+        elif args.html:
+            hist_path = Path(args.html).with_name("chirp_history.json")
         else:
-            _print_human(output)
-    finally:
-        if tmp_csv:
-            tmp_csv.unlink(missing_ok=True)
+            hist_path = Path("chirp_history.json")
+        passes = _load_history(hist_path) + new_passes
+        _save_history(hist_path, passes)
+        print(f"History     : {len(passes)} passes total -> {hist_path}", file=sys.stderr)
+
+    report = _assemble_report(passes, args.lang)
+    primary_name = report["passes"][report["primary_index"]].get("file", "report")
+
+    if args.html:
+        Path(args.html).write_text(_html_report(report, primary_name), encoding="utf-8")
+        print(f"Report written to {args.html}", file=sys.stderr)
+    elif args.json:
+        print(json.dumps(report, indent=2))
+    else:
+        _print_human(report, args.lang)
 
 
 if __name__ == "__main__":
