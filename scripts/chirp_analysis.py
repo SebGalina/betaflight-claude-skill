@@ -524,6 +524,34 @@ def _throttle_map(df: pd.DataFrame, fs: float, axis_idx: int, fmin: float, fmax:
     }
 
 
+def _spectrogram(sig: np.ndarray, fs: float, fmin: float = 5.0, fmax: float | None = None,
+                 ntime: int = 200, nfreq: int = 140) -> dict:
+    """Time x frequency STFT (dB) of the chirp window — shows the swept sine as a rising diagonal,
+    and resonances as bright horizontal bands it crosses. Cropped to the swept band, and
+    normalised per time-column so the instantaneous chirp frequency is always the bright cell
+    (the diagonal stays crisp even though the gyro attenuates the high-frequency end)."""
+    fmax = fmax or fs / 2.0 * 0.98
+    if sig.size < 4096:
+        return {}
+    sig = sp_signal.detrend(sig.astype(float))
+    nperseg = 512
+    f, t, Sxx = sp_signal.spectrogram(sig, fs=fs, nperseg=nperseg, noverlap=nperseg * 3 // 4, window="hann")
+    sel = (f >= fmin) & (f <= fmax)
+    f, Sxx = f[sel], Sxx[sel]
+    if f.size < 4 or t.size < 4:
+        return {}
+    db = 10.0 * np.log10(Sxx + 1e-12)
+    db = db - np.max(db, axis=0, keepdims=True)   # per-column: 0 dB = loudest freq at each instant
+    ts = max(1, -(-db.shape[1] // ntime))         # ceil -> actually cap the payload size
+    fsd = max(1, -(-db.shape[0] // nfreq))
+    db = db[::fsd, ::ts]
+    return {
+        "t_s": [round(float(x), 2) for x in t[::ts]],
+        "freqs": [round(float(x), 1) for x in f[::fsd]],
+        "levels_db": [[round(float(v), 1) for v in row] for row in db],
+    }
+
+
 # ---------------------------------------------------------------------------
 # Gyro noise spectrum (PSD in dB) — raw vs filtered, for the filtering decision
 # ---------------------------------------------------------------------------
@@ -810,7 +838,22 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             quiet = quiet & (thr > idle)
         noise = _noise_spectrum(df, fs, primary_axis_idx, quiet, fmin=30.0, fmax=fmax)
 
-    return results, throttle_map, noise
+    # Spectrogram of the primary axis over its (contiguous) chirp window -> the rising sweep.
+    spectro = {}
+    if primary_axis_idx is not None:
+        gcol = GYRO_COL.format(primary_axis_idx)
+        act = (labels == primary_axis_idx) if labels is not None else active
+        if act is not None and gcol in df.columns:
+            idx = np.where(np.asarray(act))[0]
+            if idx.size:
+                seg = df[gcol].to_numpy(float)[int(idx[0]):int(idx[-1]) + 1]
+                # crop to the swept band (+10%) so the diagonal fills the plot instead of empty HF
+                sweptmax = (results[AXES[primary_axis_idx]]["band_hz"][1]) * 1.1
+                spectro = _spectrogram(seg, fs, fmax=min(fmax, sweptmax))
+                if spectro:
+                    spectro["axis"] = AXES[primary_axis_idx]
+
+    return results, throttle_map, noise, spectro
 
 
 # ---------------------------------------------------------------------------
@@ -1101,8 +1144,8 @@ MAX_OVERLAY_PASSES = 8   # keep the full file, but only render the last N passes
 def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
     """Run the analysis on one log and package it as a self-contained 'pass'."""
     axes_filter = [args.axis] if args.axis else None
-    results, throttle_map, noise = analyse(df, fs, args.input_col, axes_filter,
-                                           fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg)
+    results, throttle_map, noise, spectro = analyse(df, fs, args.input_col, axes_filter,
+                                                    fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg)
     config = _parse_header_config(path) if path.suffix.lower() in (".bbl", ".bfl") else {}
     nyq = fs / 2.0
     throttle_max = None
@@ -1121,6 +1164,7 @@ def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
         "axes": results,
         "throttle_map": throttle_map,
         "noise_spectrum": noise,
+        "spectrogram": spectro,
         "synthesis": _synthesis(results, noise, config, throttle_max),
         "filter_suggestions": _filter_suggestions(throttle_map, config) if config else [],
         "noise_suggestions": _noise_suggestions(noise) + _filter_disable_notes(noise, config),
@@ -1188,10 +1232,15 @@ def _assemble_report(passes: list, lang: str = "fr") -> dict:
     """Trim to the last MAX_OVERLAY_PASSES, attach pass numbers + config diffs, mark primary."""
     shown = passes[-MAX_OVERLAY_PASSES:]
     base = len(passes) - len(shown)
+    primary = len(shown) - 1
     for k, p in enumerate(shown):
         p["n"] = base + k + 1
         p["ts"] = p.get("timestamp", "").replace("T", " ")
         p["diff"] = _config_diff(shown[k - 1]["config"], p["config"]) if k > 0 else ""
+        # only the primary pass renders its heatmaps -> drop them from the others to keep the HTML light
+        if k != primary:
+            for heavy in ("spectrogram", "throttle_map", "noise_spectrum"):
+                p.pop(heavy, None)
     return {"passes": shown, "primary_index": len(shown) - 1, "total_passes": len(passes),
             "lang": lang, "_glossary": GLOSSARY, "_strings": STRINGS}
 
@@ -1331,6 +1380,17 @@ GLOSSARY = {
               "with rpm — a line that shifts as throttle rises is motor-borne (RPM filter / dyn notch), a "
               "fixed line is a frame resonance (static notch).",
     },
+    "spectrogram": {
+        "fr": "Spectrogramme : une carte temps × fréquence de l'énergie du gyro pendant le chirp. Le "
+              "balayage du chirp apparaît comme une diagonale qui monte en fréquence ; une résonance "
+              "apparaît comme une bande horizontale qui s'allume quand le sweep passe à sa fréquence. "
+              "Sert à vérifier que le chirp a bien balayé toute la bande et à repérer visuellement les "
+              "résonances et leur étalement.",
+        "en": "Spectrogram: a time × frequency map of the gyro energy during the chirp. The chirp sweep "
+              "shows up as a diagonal rising in frequency; a resonance shows up as a horizontal band that "
+              "lights up when the sweep reaches its frequency. Use it to check the chirp actually swept the "
+              "whole band and to spot resonances and their spread visually.",
+    },
     "step_response": {
         "fr": "Réponse indicielle : la réaction de l'axe à un échelon de consigne, reconstruite depuis "
               "la même mesure que le Bode. C'est le pendant temporel : on y lit l'overshoot (dépassement "
@@ -1400,6 +1460,9 @@ STRINGS = {
         "leg_raw": "brut (unfilt)", "leg_filt": "filtré (gyroADC)",
         "leg_floor": "plancher", "leg_resid": "résiduel (indicatif)",
         "step2_h": "PID", "step2_sub": "— après avoir figé le filtrage",
+        "spectro_h": "Balayage du chirp (spectrogramme)",
+        "spectro_cap": "{sg} — gyro {ax} pendant le sweep. La diagonale qui monte = le chirp ; les bandes "
+                       "horizontales = résonances qui s'allument quand le sweep les traverse.",
         "overlay": "Courbes superposées :",
         "bode_h": "Réponse en fréquence (Bode)", "step_h": "Réponse indicielle (temporel)",
         "coh_cap": "{coh} — fiabilité de la mesure par fréquence (grisé si &lt; {gate})",
@@ -1447,6 +1510,9 @@ STRINGS = {
         "leg_raw": "raw (unfilt)", "leg_filt": "filtered (gyroADC)",
         "leg_floor": "floor", "leg_resid": "residual (indicative)",
         "step2_h": "PID", "step2_sub": "— after the filtering is frozen",
+        "spectro_h": "Chirp sweep (spectrogram)",
+        "spectro_cap": "{sg} — {ax} gyro during the sweep. The rising diagonal = the chirp; horizontal "
+                       "bands = resonances lighting up as the sweep crosses them.",
         "overlay": "Overlaid curves:",
         "bode_h": "Frequency response (Bode)", "step_h": "Step response (time domain)",
         "coh_cap": "{coh} — per-frequency measurement reliability (greyed if &lt; {gate})",
@@ -1479,7 +1545,7 @@ def _html_report(report: dict, file_name: str) -> str:
 <html><head><meta charset="utf-8">
 <title>Chirp report — {file_name}</title>
 <style>
-  body {{ font: 13px/1.5 system-ui, sans-serif; margin: 24px; background:#11141a; color:#dfe3ea; max-width:960px; }}
+  body {{ font: 13px/1.5 system-ui, sans-serif; margin: 20px; background:#11141a; color:#dfe3ea; max-width:1800px; }}
   h1 {{ font-size: 19px; }} h2 {{ font-size: 15px; margin: 22px 0 8px; color:#9ecbff; }}
   h3 {{ font-size: 13px; color:#8893a5; margin:14px 0 4px; text-transform:uppercase; letter-spacing:.5px; }}
   .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px 14px; margin-bottom:18px; background:#171b22; }}
@@ -1532,7 +1598,7 @@ const PRI = PASSES[PRIMARY] || {{}};
 const CFG = PRI.config || {{}};
 const GATE = {COHERENCE_GATE};
 const PAL = ['#7686a0','#9ad','#80cbc4','#ba9cff','#f48fb1','#aed581','#ffb74d','#4fc3f7'];
-const W = 880, Hh = 150, PAD = 46;
+let W = 880; const Hh = 150, PAD = 46;   // W is recomputed responsively at each render()
 let LANG = R.lang || 'fr';
 window.addEventListener('error', e => {{
   const d=document.createElement('pre'); d.style.color='#ff8a80';
@@ -1626,6 +1692,7 @@ const single = R.total_passes<=1;
 
 function render() {{
   root.innerHTML='';
+  W = Math.max(720, Math.min(1760, window.innerWidth - 48));   // responsive: fill the window
   document.getElementById('h1').innerHTML = T('title')+' <span class="meta">— '+FILE+'</span>';
   document.getElementById('langbtn').textContent = T('lang_btn');
 
@@ -1753,6 +1820,27 @@ function render() {{
     const head=el('div','axis step pid'); root.appendChild(head);
     head.appendChild(el('h2',null,'<span class=stepnum>2</span>'+tip('pid',T('step2_h'))+' '+T('step2_sub')));
     head.appendChild(el('p','meta',T('overlay')+' '+PASSES.map((p,i)=>'<span class=swatch style="background:'+PAL[i%PAL.length]+'"></span>'+passLabel(p)).join(' &nbsp; ')));
+    // chirp spectrogram (primary pass): the rising sweep + resonances as horizontal bands
+    const sg=PRI.spectrogram;
+    if (sg && sg.levels_db && sg.levels_db.length) {{
+      head.appendChild(el('h3',null,tip('spectrogram',T('spectro_h'))+' ('+sg.axis+' gyro)'));
+      const rows=sg.levels_db.length, cols=sg.levels_db[0].length;
+      const cw=W-PAD-12, Hs=Math.max(220,rows*1.6), cellW=cw/cols, cellH=(Hs-30)/rows;
+      const ctx=mkCanvas(head,Hs).getContext('2d'); ctx.clearRect(0,0,W,Hs);
+      const lo=-28, hi=0;   // fixed window for contrast: cells within 28 dB of each column's max
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {{
+        const v=sg.levels_db[r][c]; const tn=Math.max(0,Math.min(1,(v-lo)/((hi-lo)||1)));
+        ctx.fillStyle='rgb('+Math.round(255*Math.min(1,tn*1.6))+','+Math.round(150*Math.max(0,1-Math.abs(tn-0.55)*2))+','+Math.round(255*(1-tn))+')';
+        ctx.fillRect(PAD+c*cellW, 8+(rows-1-r)*cellH, cellW+1, cellH+1);
+      }}
+      ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
+      const fmaxS=sg.freqs[sg.freqs.length-1];
+      for (let k=0;k<=5;k++) {{ const fv=fmaxS*k/5, y=8+(1-k/5)*(Hs-30); ctx.fillText(fv.toFixed(0), 4, y+9); }}
+      const tmaxS=sg.t_s[sg.t_s.length-1]-sg.t_s[0];
+      for (let k=0;k<=5;k++) {{ const x=PAD+k/5*cw; ctx.fillText((tmaxS*k/5).toFixed(1)+(k===5?' s':''), x-6, Hs-6); }}
+      ctx.fillStyle='#9ecbff'; ctx.fillText('freq (Hz) ↑   temps →', PAD, Hs-18);
+      head.appendChild(el('div','legend',T('spectro_cap').replace('{{sg}}',tip('spectrogram','spectrogramme')).replace('{{ax}}',sg.axis)));
+    }}
   }}
   for (const axis of Object.keys(PRI.axes||{{}})) {{
     const d=PRI.axes[axis]; if(!d||!d.freq) continue;
@@ -1844,7 +1932,7 @@ function render() {{
   // ---- Glossary ----
   {{
     const order=['chirp','gain','phase','phase_margin','crossover','coherence','resonance',
-      'noise_psd','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','step_response','propwash'];
+      'noise_psd','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','spectrogram','step_response','propwash'];
     const box=el('div','axis'); root.appendChild(box); box.appendChild(el('h2',null,T('glossary_h')));
     let s='<dl class=glos>';
     for (const k of order) {{ const g=GL[k]; if (g && (g[LANG]||g.fr)) {{
@@ -1854,6 +1942,7 @@ function render() {{
   }}
 }}
 document.getElementById('langbtn').onclick=()=>{{ LANG = (LANG==='fr'?'en':'fr'); render(); }};
+let _rt; window.addEventListener('resize', ()=>{{ clearTimeout(_rt); _rt=setTimeout(render, 150); }});
 render();
 </script></body></html>
 """
