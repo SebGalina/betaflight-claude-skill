@@ -513,18 +513,22 @@ def _throttle_map(df: pd.DataFrame, fs: float, axis_idx: int, fmin: float, fmax:
 # Gyro noise spectrum (PSD in dB) — raw vs filtered, for the filtering decision
 # ---------------------------------------------------------------------------
 
-NOISE_PEAK_PROM_DB = 3.0       # a noise peak must rise this far above the local floor
-NOISE_OK_DB = -10.0            # filtered noise peaks below this are considered acceptable
+NOISE_PEAK_PROM_DB = 3.0       # a noise peak must rise this far above the local floor to be flagged
+NOISE_FLOOR_PCT = 20           # percentile of the raw PSD (>70 Hz) taken as the broadband noise floor
+RESIDUAL_OK_DB = 6.0           # a filtered peak within this of the floor is essentially flattened (indicative)
 
 
 def _noise_spectrum(df: pd.DataFrame, fs: float, axis_idx: int, quiet_mask: np.ndarray,
-                    fmin: float = 10.0, fmax: float | None = None) -> dict:
+                    fmin: float = 30.0, fmax: float | None = None) -> dict:
     """Gyro PSD (dB) over a chirp-free window: raw (gyroUnfilt) vs filtered (gyroADC).
 
-    During the chirp the gyro is full of excitation across the whole band, which masks the
-    real noise floor — so we measure over the *quiet* window (flying, this axis not excited).
-    Both curves are normalised so the strongest component reads 0 dB; motor/frame noise peaks
-    then read as negative dB, and the NOISE_OK_DB (-10 dB) line is a filtering-decision guide.
+    During the chirp the gyro is full of excitation across the whole band, which masks the real
+    noise floor — so we measure over the *quiet* window (flying, this axis not excited).
+
+    Both curves are referenced to the RAW broadband noise floor (the flat HF baseline, robust and
+    stable from flight to flight, unlike the motion peak): 0 dB = floor. A peak's height above the
+    floor is its prominence; the filtered peak's residual above the floor and the raw->filtered
+    attenuation are the reference-independent quantities the filtering decision rests on.
     """
     gcol = GYRO_COL.format(axis_idx)
     ucol = f"gyroUnfilt[{axis_idx}]"
@@ -549,22 +553,24 @@ def _noise_spectrum(df: pd.DataFrame, fs: float, axis_idx: int, quiet_mask: np.n
     f, raw, filt = f[sel], raw[sel], filt[sel]
     if f.size < 8:
         return {}
-    ref = float(np.max(raw))               # strongest component -> 0 dB reference
-    raw = raw - ref
-    filt = filt - ref
+    hf = f >= 70.0
+    floor = float(np.percentile(raw[hf], NOISE_FLOOR_PCT)) if hf.sum() >= 5 else float(np.median(raw))
+    raw = raw - floor                       # 0 dB = raw broadband noise floor
+    filt = filt - floor
 
     peaks = []
-    band = f >= 70.0
-    if band.sum() > 5:
-        fb, rb = f[band], raw[band]
+    if hf.sum() > 5:
+        fb, rb = f[hf], raw[hf]
         dfd = float(np.median(np.diff(fb))) or 1.0
         idx, props = sp_signal.find_peaks(rb, prominence=NOISE_PEAK_PROM_DB, distance=max(1, int(15.0 / dfd)))
         for k, i in enumerate(idx):
             j = int(np.argmin(np.abs(f - fb[i])))
-            peaks.append({"freq_hz": round(float(fb[i]), 0), "db": round(float(rb[i]), 1),
-                          "db_filt": round(float(filt[j]), 1),
+            peaks.append({"freq_hz": round(float(fb[i]), 0),
+                          "above_floor_db": round(float(rb[i]), 1),       # raw peak height over the floor
+                          "resid_db": round(float(filt[j]), 1),           # filtered residual over the floor
+                          "atten_db": round(float(rb[i] - filt[j]), 1),   # raw -> filtered cut (ref-independent)
                           "prom_db": round(float(props["prominences"][k]), 1)})
-        peaks.sort(key=lambda p: p["db"], reverse=True)
+        peaks.sort(key=lambda p: p["above_floor_db"], reverse=True)
         peaks = peaks[:6]
 
     step = max(1, len(f) // 400)
@@ -577,10 +583,11 @@ def _noise_spectrum(df: pd.DataFrame, fs: float, axis_idx: int, quiet_mask: np.n
     }
 
 
-def _worst_filtered_db(noise: dict) -> float | None:
-    """The loudest filtered noise peak (dB, closest to the 0 dB reference), or None."""
+def _worst_residual_db(noise: dict) -> float | None:
+    """The largest filtered residual above the noise floor (dB), or None — how much resonance
+    survives filtering. Low (near the floor) = the filtering has flattened the noise."""
     peaks = (noise or {}).get("peaks") or []
-    return max((p["db_filt"] for p in peaks), default=None)
+    return max((p["resid_db"] for p in peaks), default=None)
 
 
 def _filter_disable_notes(noise: dict, config: dict) -> list[dict]:
@@ -606,66 +613,68 @@ def _filter_disable_notes(noise: dict, config: dict) -> list[dict]:
     g1hi = (g1.get("dyn") or [None, None])[-1] or g1.get("static")
     g2c = (config.get("gyro_lpf2") or {}).get("static")
     if g2c:
-        mr = max_raw_above(g2c)
-        if mr is not None and mr <= -20:
+        mr = max_raw_above(g2c)              # raw level above the cut-off, relative to the floor
+        if mr is not None and mr <= RESIDUAL_OK_DB:
             out.append({
-                "fr": f"Gyro LPF2 (statique {g2c} Hz) : au-dessus de sa coupure le bruit brut plafonne à "
-                      f"{mr:.0f} dB (LPF1 jusqu'à {g1hi} Hz + RPM/dyn_notch font le travail) → il n'enlève quasi "
-                      f"rien. Candidat à désactiver (gyro_lpf2_static_hz = 0) pour retirer son retard de phase.",
-                "en": f"Gyro LPF2 (static {g2c} Hz): above its cut-off the raw noise tops out at {mr:.0f} dB "
-                      f"(LPF1 up to {g1hi} Hz + RPM/dyn_notch do the work) → it removes almost nothing. Candidate "
-                      f"to disable (gyro_lpf2_static_hz = 0) to drop its phase lag."})
+                "fr": f"Gyro LPF2 (statique {g2c} Hz) : au-dessus de sa coupure le bruit brut reste à +{max(mr,0):.0f} dB "
+                      f"du plancher (LPF1 jusqu'à {g1hi} Hz + RPM/dyn_notch font le travail) → rien à enlever. "
+                      f"Candidat à désactiver (gyro_lpf2_static_hz = 0) pour retirer son retard de phase.",
+                "en": f"Gyro LPF2 (static {g2c} Hz): above its cut-off the raw noise stays at +{max(mr,0):.0f} dB over the "
+                      f"floor (LPF1 up to {g1hi} Hz + RPM/dyn_notch do the work) → nothing to remove. Candidate to "
+                      f"disable (gyro_lpf2_static_hz = 0) to drop its phase lag."})
         elif mr is not None:
             out.append({
-                "fr": f"Gyro LPF2 ({g2c} Hz) : encore du bruit (~{mr:.0f} dB) au-dessus de sa coupure — il sert "
-                      f"toujours, à garder.",
-                "en": f"Gyro LPF2 ({g2c} Hz): still noise (~{mr:.0f} dB) above its cut-off — it's still working, keep it."})
+                "fr": f"Gyro LPF2 ({g2c} Hz) : encore +{mr:.0f} dB de bruit au-dessus du plancher passé sa coupure — "
+                      f"il sert toujours, à garder.",
+                "en": f"Gyro LPF2 ({g2c} Hz): still +{mr:.0f} dB of noise above the floor past its cut-off — it's still "
+                      f"working, keep it."})
     d2c = (config.get("dterm_lpf2") or {}).get("static")
     if d2c:
         mrd = max_raw_above(150.0)
-        if mrd is not None and mrd <= -15:
+        if mrd is not None and mrd <= RESIDUAL_OK_DB:
             out.append({
-                "fr": f"D-term LPF2 (statique {d2c} Hz) : le D-term n'est pas mesuré ici, mais le gyro qui "
-                      f"l'alimente est déjà propre au-dessus de 150 Hz (~{mrd:.0f} dB) → ce 2e étage est "
-                      f"probablement désactivable aussi (dterm_lpf2_static_hz = 0) ; à confirmer au ressenti/température.",
-                "en": f"D-term LPF2 (static {d2c} Hz): the D-term isn't measured here, but the gyro feeding it is "
-                      f"already clean above 150 Hz (~{mrd:.0f} dB) → this 2nd stage is likely disable-able too "
+                "fr": f"D-term LPF2 (statique {d2c} Hz) : le D-term n'est pas mesuré ici, mais le gyro qui l'alimente "
+                      f"est déjà au plancher au-dessus de 150 Hz (+{max(mrd,0):.0f} dB) → ce 2e étage est probablement "
+                      f"désactivable aussi (dterm_lpf2_static_hz = 0) ; à confirmer au ressenti/température.",
+                "en": f"D-term LPF2 (static {d2c} Hz): the D-term isn't measured here, but the gyro feeding it is already "
+                      f"at the floor above 150 Hz (+{max(mrd,0):.0f} dB) → this 2nd stage is likely disable-able too "
                       f"(dterm_lpf2_static_hz = 0); confirm by feel/motor temps."})
-        else:
+        elif mrd is not None:
             out.append({
-                "fr": f"D-term LPF2 ({d2c} Hz) : le bruit moteur vers 230 Hz (~{max_raw_above(150.0):.0f} dB brut) "
-                      f"tombe dans la zone que le D amplifie → le filtrage D-term est utile ici, à garder.",
-                "en": f"D-term LPF2 ({d2c} Hz): motor noise near 230 Hz (~{max_raw_above(150.0):.0f} dB raw) lands in "
-                      f"the band the D amplifies → D-term filtering earns its keep here, leave it on."})
+                "fr": f"D-term LPF2 ({d2c} Hz) : le bruit moteur vers 230 Hz (+{mrd:.0f} dB du plancher) tombe dans la "
+                      f"zone que le D amplifie → le filtrage D-term est utile ici, à garder.",
+                "en": f"D-term LPF2 ({d2c} Hz): motor noise near 230 Hz (+{mrd:.0f} dB over the floor) lands in the band "
+                      f"the D amplifies → D-term filtering earns its keep here, leave it on."})
     return out
 
 
 def _noise_suggestions(noise: dict) -> list[dict]:
-    """Observations read off the noise PSD peaks, against the -10 dB guide ({fr, en})."""
+    """Observations from the noise PSD peaks — prominence over the floor + raw->filtered
+    attenuation, both reference-independent ({fr, en})."""
     if not noise:
         return []
     peaks = noise.get("peaks") or []
     out = []
     if not peaks:
         out.append({
-            "fr": "Plancher de bruit propre : aucun pic au-dessus du seuil >70 Hz — le filtrage couvre "
-                  "largement le bruit présent.",
-            "en": "Clean noise floor: no peak above the >70 Hz threshold — filtering more than covers the "
-                  "noise present."})
+            "fr": "Plancher de bruit propre : aucun pic >70 Hz ne dépasse le plancher — rien de discret à notcher.",
+            "en": "Clean noise floor: no >70 Hz peak rises above the floor — nothing discrete to notch."})
         return out
     for p in peaks:
-        f, raw, flt = p["freq_hz"], p["db"], p["db_filt"]
-        head = (f"{f:.0f} Hz : bruit moteur/cadre à {raw:.0f} dB en brut, ramené à {flt:.0f} dB après filtres",
-                f"{f:.0f} Hz: motor/frame noise at {raw:.0f} dB raw, brought down to {flt:.0f} dB after filters")
-        if flt <= NOISE_OK_DB:
-            below = NOISE_OK_DB - flt
+        f, af, resid, att = p["freq_hz"], p["above_floor_db"], p["resid_db"], p["atten_db"]
+        head = (f"{f:.0f} Hz : pic de bruit à +{af:.0f} dB au-dessus du plancher, atténué de {att:.0f} dB "
+                f"par les filtres",
+                f"{f:.0f} Hz: noise peak at +{af:.0f} dB above the floor, cut by {att:.0f} dB by the filters")
+        if resid <= RESIDUAL_OK_DB:
             out.append({
-                "fr": f"{head[0]} — soit ~{below:.0f} dB sous le repère −10 dB : le filtrage est confortable ici.",
-                "en": f"{head[1]} — about {below:.0f} dB below the −10 dB guide: filtering is comfortable here."})
+                "fr": f"{head[0]} → résiduel +{max(resid,0):.0f} dB, dans le plancher : aplati, rien à faire ici.",
+                "en": f"{head[1]} → residual +{max(resid,0):.0f} dB, in the floor: flattened, nothing to do here."})
         else:
             out.append({
-                "fr": f"{head[0]} — encore au-dessus de −10 dB : le filtrage travaille à cette fréquence, peu de marge.",
-                "en": f"{head[1]} — still above −10 dB: filtering is working at this frequency, little margin."})
+                "fr": f"{head[0]} → résiduel encore +{resid:.0f} dB au-dessus du plancher : raie discrète non "
+                      f"complètement traitée (notch à renforcer/cibler).",
+                "en": f"{head[1]} → residual still +{resid:.0f} dB above the floor: a discrete line not fully "
+                      f"handled (notch to strengthen/target)."})
     return out
 
 
@@ -783,7 +792,7 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             quiet = np.ones(len(df), dtype=bool)
         if THROTTLE_COL in df.columns:
             quiet = quiet & (df[THROTTLE_COL].to_numpy() > THROTTLE_IDLE)
-        noise = _noise_spectrum(df, fs, primary_axis_idx, quiet, fmin=10.0, fmax=fmax)
+        noise = _noise_spectrum(df, fs, primary_axis_idx, quiet, fmin=30.0, fmax=fmax)
 
     return results, throttle_map, noise
 
@@ -943,8 +952,8 @@ def _pid_suggestions(axes: dict, cfg: dict, noise: dict | None = None) -> dict:
     headroom (constatation style, not prescriptions) — {fr, en} each."""
     out: dict = {}
     pids = cfg.get("pids") or {}
-    worst = _worst_filtered_db(noise)
-    has_margin = worst is not None and worst <= -15.0   # clear filtering headroom -> phase to gain back
+    worst = _worst_residual_db(noise)
+    has_margin = worst is not None and worst <= RESIDUAL_OK_DB   # noise back in the floor -> filtering headroom
     # cross-link clause used on margin-limited axes
     if has_margin:
         link_fr = " Comme le spectre de bruit montre de la marge de filtrage, l'alléger relèverait d'abord cette marge sans toucher aux gains"
@@ -1016,33 +1025,27 @@ def _synthesis(axes: dict, noise: dict, config: dict, throttle_max: float | None
     Data-driven: it states what the curves show and how the levers chain, without prescribing.
     """
     obs: list[dict] = []
-    worst = _worst_filtered_db(noise)
+    worst = _worst_residual_db(noise)       # largest filtered residual above the noise floor
     has_unfilt = (noise or {}).get("has_unfilt")
-    margin_avail = worst is not None and worst <= -15.0
+    margin_avail = worst is not None and worst <= RESIDUAL_OK_DB
     margins = {ax: d["phase_margin_deg"] for ax, d in axes.items() if d.get("phase_margin_deg") is not None}
     low = {ax: mv for ax, mv in margins.items() if mv < 35.0}
     low_str = ", ".join(f"{ax} {mv:.0f}°" for ax, mv in low.items())
 
-    # 1) Filtering state
+    # 1) Filtering state — judged on the filtered residual above the floor (reference-stable)
     if worst is not None:
         if has_unfilt and margin_avail:
             obs.append({
-                "fr": f"Filtrage — le gyro filtré reste très bas (pic le plus fort à {worst:.0f} dB, loin sous le "
-                      f"repère −10 dB) : le filtrage en place est plus fort que ne l'exige le bruit présent.",
-                "en": f"Filtering — the filtered gyro stays very low (loudest peak at {worst:.0f} dB, well below the "
-                      f"−10 dB guide): current filtering is stronger than the present noise requires."})
-        elif worst <= NOISE_OK_DB:
-            obs.append({
-                "fr": f"Filtrage — pic filtré le plus fort à {worst:.0f} dB, sous −10 dB mais avec peu de réserve : "
-                      f"marge de filtrage limitée.",
-                "en": f"Filtering — loudest filtered peak at {worst:.0f} dB, below −10 dB but with little headroom: "
-                      f"limited filtering margin."})
+                "fr": f"Filtrage — après filtres, le bruit retombe dans son plancher (résiduel max +{max(worst,0):.0f} dB) : "
+                      f"le filtrage en place est plus fort que ne l'exige le bruit présent.",
+                "en": f"Filtering — after filtering, the noise falls back into its floor (max residual +{max(worst,0):.0f} dB): "
+                      f"current filtering is stronger than the present noise requires."})
         else:
             obs.append({
-                "fr": f"Filtrage — un pic filtré atteint {worst:.0f} dB, au-dessus de −10 dB : le filtrage est "
-                      f"nécessaire ici, pas de marge pour l'alléger.",
-                "en": f"Filtering — a filtered peak reaches {worst:.0f} dB, above −10 dB: filtering is needed here, "
-                      f"no room to loosen it."})
+                "fr": f"Filtrage — il subsiste un résiduel à +{worst:.0f} dB au-dessus du plancher après filtres : "
+                      f"le filtrage travaille encore, peu de marge pour l'alléger.",
+                "en": f"Filtering — a +{worst:.0f} dB residual remains above the floor after filtering: the filters "
+                      f"are still working, little room to loosen them."})
 
     # 2) The chain filter -> phase -> P/D
     if margin_avail and low:
@@ -1306,15 +1309,18 @@ GLOSSARY = {
               "the same story.",
     },
     "noise_psd": {
-        "fr": "Spectre de bruit (PSD, dB) : la densité de puissance du gyro en fonction de la fréquence, "
-              "mesurée hors chirp. Le pic le plus fort = 0 dB de référence ; les pics de bruit (moteur, "
-              "cadre) se lisent en dB sous ce repère. On compare le brut (gyroUnfilt, avant filtres) au "
-              "filtré (gyroADC) : l'écart = ce que les filtres enlèvent. Règle d'usage : un pic resté sous "
-              "~-10 dB après filtrage est acceptable → marge pour assouplir le filtrage.",
-        "en": "Noise spectrum (PSD, dB): the gyro power density vs frequency, measured outside the chirp. "
-              "The strongest peak = 0 dB reference; noise peaks (motor, frame) read in dB below it. Compare "
-              "raw (gyroUnfilt, pre-filter) to filtered (gyroADC): the gap = what the filters remove. Rule "
-              "of thumb: a peak staying below ~-10 dB after filtering is acceptable → room to loosen filtering.",
+        "fr": "Spectre de bruit (PSD, dB) : densité de puissance du gyro vs fréquence, mesurée hors chirp. "
+              "Référence = le plancher de bruit (la base plate en haute fréquence, stable d'un vol à l'autre), "
+              "donc 0 dB = plancher et un pic se lit par sa hauteur AU-DESSUS du plancher. Les deux grandeurs "
+              "fiables (indépendantes de la référence) : l'atténuation brut→filtré (ce que les filtres enlèvent) "
+              "et le résiduel filtré au-dessus du plancher (ce qui reste). Pas de seuil absolu type « −10 dB » : "
+              "c'est arbitraire et dépendant du vol ; les vrais juges sont la marge de phase et la température moteur.",
+        "en": "Noise spectrum (PSD, dB): gyro power density vs frequency, measured outside the chirp. Reference "
+              "= the noise floor (the flat HF baseline, stable across flights), so 0 dB = floor and a peak is read "
+              "by its height ABOVE the floor. The two reliable (reference-independent) quantities: the raw→filtered "
+              "attenuation (what the filters remove) and the filtered residual above the floor (what remains). No "
+              "absolute '−10 dB' threshold: it is arbitrary and flight-dependent; the real judges are phase margin "
+              "and motor temperature.",
     },
     "propwash": {
         "fr": "Propwash : les oscillations/secousses quand le drone retombe dans ses propres turbulences "
@@ -1352,10 +1358,13 @@ STRINGS = {
         "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
         "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
         "noise_h": "Spectre de bruit gyro (PSD, dB)",
-        "noise_cap": "{psd} — brut (gyroUnfilt) vs filtré (gyroADC), hors chirp. Pic le plus fort = 0 dB ; "
-                     "repère −10 dB = pic acceptable après filtrage.",
-        "noise_cap_nounfilt": "{psd} — gyro filtré (gyroUnfilt absent du log). Pic le plus fort = 0 dB.",
-        "leg_raw": "brut (unfilt)", "leg_filt": "filtré (gyroADC)", "leg_ok": "seuil −10 dB",
+        "noise_cap": "{psd} — brut (gyroUnfilt) vs filtré (gyroADC), hors chirp. 0 dB = plancher de bruit ; "
+                     "un pic dont le résiduel filtré retombe dans le plancher est aplati. Le repère +6 dB est "
+                     "indicatif (prominence d'une raie), pas une spec — les vrais juges sont la marge de phase et "
+                     "la température moteur.",
+        "noise_cap_nounfilt": "{psd} — gyro filtré (gyroUnfilt absent du log). 0 dB = plancher de bruit.",
+        "leg_raw": "brut (unfilt)", "leg_filt": "filtré (gyroADC)",
+        "leg_floor": "plancher", "leg_resid": "résiduel (indicatif)",
         "step2_h": "PID", "step2_sub": "— après avoir figé le filtrage",
         "overlay": "Courbes superposées :",
         "bode_h": "Réponse en fréquence (Bode)", "step_h": "Réponse indicielle (temporel)",
@@ -1392,10 +1401,13 @@ STRINGS = {
         "step1_h": "Filtering", "step1_sub": "— set this first",
         "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
         "noise_h": "Gyro noise spectrum (PSD, dB)",
-        "noise_cap": "{psd} — raw (gyroUnfilt) vs filtered (gyroADC), outside the chirp. Strongest peak = 0 dB; "
-                     "the −10 dB line = a peak acceptable after filtering.",
-        "noise_cap_nounfilt": "{psd} — filtered gyro (gyroUnfilt absent from the log). Strongest peak = 0 dB.",
-        "leg_raw": "raw (unfilt)", "leg_filt": "filtered (gyroADC)", "leg_ok": "−10 dB guide",
+        "noise_cap": "{psd} — raw (gyroUnfilt) vs filtered (gyroADC), outside the chirp. 0 dB = noise floor; a "
+                     "peak whose filtered residual falls back into the floor is flattened. The +6 dB line is "
+                     "indicative (a line's prominence), not a spec — the real judges are phase margin and motor "
+                     "temperature.",
+        "noise_cap_nounfilt": "{psd} — filtered gyro (gyroUnfilt absent from the log). 0 dB = noise floor.",
+        "leg_raw": "raw (unfilt)", "leg_filt": "filtered (gyroADC)",
+        "leg_floor": "floor", "leg_resid": "residual (indicative)",
         "step2_h": "PID", "step2_sub": "— after the filtering is frozen",
         "overlay": "Overlaid curves:",
         "bode_h": "Frequency response (Bode)", "step_h": "Step response (time domain)",
@@ -1631,12 +1643,15 @@ function render() {{
     const ns=PRI.noise_spectrum;
     if (ns && ns.freqs && ns.freqs.length) {{
       box.appendChild(el('h3',null,tip('noise_psd',T('noise_h'))+' ('+ns.axis+' gyro)'));
-      const F=ns.freqs, fmin=Math.max(10,F[0]), fmax=F[F.length-1];
-      let lo=Math.max(-80,Math.min(-50,...ns.filt_db,...ns.raw_db)), hi=Math.max(3,...ns.raw_db);
+      const F=ns.freqs, fmin=Math.max(30,F[0]), fmax=F[F.length-1];
+      // floor-relative axis: 0 = noise floor. Scale to the noise region (95th pct) so a stray
+      // low-freq motion bump doesn't squash the plot.
+      const sorted=ns.raw_db.slice().sort((a,b)=>a-b); const hiR=sorted[Math.floor(sorted.length*0.97)];
+      let lo=Math.max(-25,Math.min(-6,...ns.filt_db)), hi=Math.max(12,Math.ceil(hiR/5)*5+3);
       const H3=180, nc=mkCanvas(box,H3).getContext('2d');
-      drawAxes(nc,H3,fmin,fmax,lo,hi,'dB');
+      drawAxes(nc,H3,fmin,fmax,lo,hi,'dB/plancher');
       if (CFG.dyn_notch) vband(nc,H3,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
-      // filter transfer functions — show WHERE each gyro LPF attenuates (rolloff curve in dB)
+      // filter transfer functions — show WHERE each gyro LPF attenuates (rolloff curve, anchored at the floor)
       const ORD={{PT1:1,PT2:2,PT3:3,BIQUAD:2}};
       const lpfDb=(f,fc,o)=>-10*o*Math.log10(1+Math.pow(f/fc,2));
       const drawLpf=(fc,o,col,lab)=>{{ if(!fc)return; nc.strokeStyle=col; nc.lineWidth=1.2; nc.setLineDash([5,3]); nc.beginPath();
@@ -1644,19 +1659,21 @@ function render() {{
         nc.stroke(); nc.setLineDash([]); if(lab){{ const xc=logx(fc,fmin,fmax); nc.fillStyle=col; nc.fillText(lab,Math.min(xc,W-60),30); }} }};
       if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ const o=ORD[CFG.gyro_lpf1.type]||1; drawLpf(CFG.gyro_lpf1.dyn[0],o,'#5a9bd4','LPF1↓'); drawLpf(CFG.gyro_lpf1.dyn[1],o,'#5a9bd4','LPF1↑'); }}
       if (CFG.gyro_lpf2 && CFG.gyro_lpf2.static) {{ const o=ORD[CFG.gyro_lpf2.type]||1; drawLpf(CFG.gyro_lpf2.static,o,'#b0a0ff','LPF2'); }}
-      hline(nc,H3,-10,lo,hi,'#ff8a80','-10 dB');
+      hline(nc,H3,0,lo,hi,'#7e8aa0','plancher');                              // 0 dB = noise floor
+      hline(nc,H3,{RESIDUAL_OK_DB:g},lo,hi,'#ff8a80','+{RESIDUAL_OK_DB:g} dB');  // indicative residual-resonance guide
       const ones=F.map(_=>1);
       if (ns.has_unfilt) plotLine(nc,H3,F,ns.filt_db,ones,fmin,fmax,lo,hi,'#80cbc4',{{lw:1.6}});
       plotLine(nc,H3,F,ns.raw_db,ones,fmin,fmax,lo,hi,'#4fc3f7',{{lw:1.8}});
       nc.font='10px sans-serif'; let _lab=0;
       for (const pk of (ns.peaks||[])) {{ if (pk.freq_hz<fmin||pk.freq_hz>fmax) continue;
-        const x=logx(pk.freq_hz,fmin,fmax), y=lerp(pk.db,lo,hi,H3-22,8);
+        const x=logx(pk.freq_hz,fmin,fmax), y=lerp(pk.above_floor_db,lo,hi,H3-22,8);
         nc.fillStyle='#ffd479'; nc.beginPath(); nc.arc(x,y,2.6,0,7); nc.fill();
-        if (pk.db >= -20) {{ const dy=(_lab++ %2)?12:-3;  // stagger to avoid overlap
-          nc.fillText(pk.freq_hz.toFixed(0)+'Hz '+pk.db.toFixed(0)+'dB', x+4, y+dy); }} }}
+        if (pk.above_floor_db >= {RESIDUAL_OK_DB:g}) {{ const dy=(_lab++ %2)?12:-3;  // stagger to avoid overlap
+          nc.fillText(pk.freq_hz.toFixed(0)+'Hz +'+pk.above_floor_db.toFixed(0)+'dB', x+4, y+dy); }} }}
       box.appendChild(el('div','legend',
         (ns.has_unfilt?('<span style="color:#4fc3f7">— '+T('leg_raw')+'</span><span style="color:#80cbc4">— '+T('leg_filt')+'</span>'):'<span style="color:#4fc3f7">— gyro</span>')+
-        '<span style="color:#ff8a80">-- '+T('leg_ok')+'</span>'+
+        '<span style="color:#7e8aa0">-- '+T('leg_floor')+'</span>'+
+        '<span style="color:#ff8a80">-- '+T('leg_resid')+'</span>'+
         '<span style="color:#5a9bd4">-- '+tip('gyro_lpf','gyro LPF1')+'</span>'+
         '<span style="color:#b0a0ff">-- LPF2</span>'+
         '<span style="color:#ffd479">▮ '+tip('dyn_notch','dyn_notch')+'</span>'));
@@ -1824,9 +1841,10 @@ def _print_human(report: dict, lang: str = "fr") -> None:
             print(f"  [{axis}] {loc(txt)}")
     noise = output.get("noise_spectrum") or {}
     if noise.get("peaks"):
-        print(f"\nNoise PSD ({noise['axis']} gyro, 0 dB = strongest component):")
+        print(f"\nNoise PSD ({noise['axis']} gyro, 0 dB = noise floor):")
         for pk in noise["peaks"]:
-            print(f"  {pk['freq_hz']:.0f} Hz : {pk['db']:.0f} dB raw, {pk['db_filt']:.0f} dB filtered")
+            print(f"  {pk['freq_hz']:.0f} Hz : +{pk['above_floor_db']:.0f} dB over floor, "
+                  f"-{pk['atten_db']:.0f} dB by filters, residual +{max(pk['resid_db'],0):.0f} dB")
 
     flt_all = flt_sug + (output.get("noise_suggestions") or [])
     if flt_all:
