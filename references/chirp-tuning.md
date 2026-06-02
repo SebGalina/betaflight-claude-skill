@@ -47,24 +47,38 @@ dump | grep chirp         # shows the chirp_* parameters if the feature is built
 If `chirp_*` parameters are absent, your firmware was built without `USE_CHIRP` — reflash a
 build that includes it.
 
-### Logged debug fields (from `src/main/flight/pid.c`, `#ifdef USE_CHIRP`)
+### Logged debug fields — two firmware generations (auto-detected)
+
+The CHIRP debug layout changed between firmware versions, and `chirp_analysis.py` **auto-detects**
+which one a log uses.
+
+**Legacy** (early `USE_CHIRP`, e.g. commit `1fc6ad23`):
 
 | field | contents | scaling |
 |-------|----------|---------|
-| `debug[0]` | excitation phase (sinarg, 0…2π) — lets you reconstruct the pure sine offline | `× 5000` |
+| `debug[0]` | excitation phase (sinarg, 0…2π) | `× 5000` |
 | `debug[1]` | **active chirp axis**: `0` = roll, `1` = pitch, `2` = yaw, `-1` = inactive | raw |
 | `debug[2]` | instantaneous chirp frequency | deci-Hz (`× 10`) |
-| `debug[3]` | **raw chirp excitation**, before the phase-comp filter — the cross-correlation reference | `× 1000` |
+| `debug[3]` | **raw chirp excitation**, before the phase-comp filter | `× 1000` |
 
-`chirp_analysis.py` uses `gyroADC[i]` as the output and **`debug[3]` as the input** by default,
-segments the log per axis using **`debug[1]`**, and bounds the analysis band to the frequencies
-actually swept using **`debug[2]`**.
+**Current** (BF 2025.12.3-alpha, `db7df6e48`, and later): the CHIRP section logs **only**
+`debug[0] = 5000·sinarg`. `debug[1..3]` are gone (all-zero in the log).
 
-> **Lead-lag caveat.** `debug[3]` is the excitation *before* the phase-comp (lead-lag) shaping
-> filter and before the per-axis amplitude gain. The measured FRF therefore includes that known
-> lead-lag. This is fine for gain shape, resonance frequencies and the throttle map; for a precise
-> phase-margin reading, keep the lead-lag in mind (or compensate it from `chirp_lag_freq_hz` /
-> `chirp_lead_freq_hz`).
+So when `debug[1..3]` are empty the tool reconstructs everything from `debug[0]`:
+- **excitation** `x = sin(debug[0]/5000)` (or the calibrated `setpoint[i]`, the default — see below);
+- **instantaneous sweep frequency** = `d/dt unwrap(debug[0]/5000) / 2π` (replaces `debug[2]`);
+- **active axis** = `argmax` of the per-window `setpoint` variance (replaces `debug[1]`; the chirp
+  drives one axis at a time, so it dominates that window's energy).
+
+For the FRF input it **defaults to the calibrated `setpoint[i]`** (the actually-injected signal in
+deg/s, so the closed-loop gain sits near 0 dB and the phase margin is readable). `--input-col debug3`
+forces the legacy reference when present; `--input-col debug0` forces the reconstructed unit sine
+(shape only). Output is always `gyroADC[i]`.
+
+> **Phase-margin caveat.** The phase is steep at the 0 dB crossover, so the scalar margin is sensitive
+> to small crossover shifts (and to flight conditions: battery sag moves the loop gain when
+> `vbat_sag_compensation` is off). The tool reports the margin **with an uncertainty (±)** and
+> recommends comparing the overlaid curves / step response for before-after, not the bare number.
 
 ### Why the excitation is lead-lag shaped
 
