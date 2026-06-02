@@ -542,12 +542,17 @@ def _spectrogram(sig: np.ndarray, fs: float, fmin: float = 5.0, fmax: float | No
         return {}
     db = 10.0 * np.log10(Sxx + 1e-12)
     db = db - np.max(db, axis=0, keepdims=True)   # per-column: 0 dB = loudest freq at each instant
-    ts = max(1, -(-db.shape[1] // ntime))         # ceil -> actually cap the payload size
-    fsd = max(1, -(-db.shape[0] // nfreq))
-    db = db[::fsd, ::ts]
+    ts = max(1, -(-db.shape[1] // ntime))         # ceil -> cap the time-axis payload
+    db, t = db[:, ::ts], t[::ts]
+    # resample the frequency axis onto a LOG grid: the BF chirp sweeps exponentially, so on a log
+    # axis the sweep is a straight line and the busy low-frequency region gets the room it needs.
+    flo = float(max(fmin, f[0]))
+    logf = np.logspace(np.log10(flo), np.log10(float(f[-1])), nfreq)
+    db = np.vstack([np.interp(logf, f, db[:, c]) for c in range(db.shape[1])]).T   # nfreq x ntime
     return {
-        "t_s": [round(float(x), 2) for x in t[::ts]],
-        "freqs": [round(float(x), 1) for x in f[::fsd]],
+        "t_s": [round(float(x), 2) for x in t],
+        "freqs": [round(float(x), 1) for x in logf],
+        "logy": True,
         "levels_db": [[round(float(v), 1) for v in row] for row in db],
     }
 
@@ -1834,8 +1839,12 @@ function render() {{
         ctx.fillRect(PAD+c*cellW, 8+(rows-1-r)*cellH, cellW+1, cellH+1);
       }}
       ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
-      const fmaxS=sg.freqs[sg.freqs.length-1];
-      for (let k=0;k<=5;k++) {{ const fv=fmaxS*k/5, y=8+(1-k/5)*(Hs-30); ctx.fillText(fv.toFixed(0), 4, y+9); }}
+      // log frequency axis: decade ticks (1/2/5) placed by log position
+      const fmn=sg.freqs[0], fmx=sg.freqs[sg.freqs.length-1];
+      const lyy=fv=>8+(1-(Math.log10(fv)-Math.log10(fmn))/(Math.log10(fmx)-Math.log10(fmn)))*(Hs-30);
+      for (let d=Math.floor(Math.log10(fmn)); d<=Math.ceil(Math.log10(fmx)); d++) for (const mm of [1,2,5]) {{
+        const fv=mm*Math.pow(10,d); if (fv<fmn||fv>fmx) continue;
+        ctx.fillText(fv>=1000?(fv/1000)+'k':fv, 4, lyy(fv)+3); }}
       const tmaxS=sg.t_s[sg.t_s.length-1]-sg.t_s[0];
       for (let k=0;k<=5;k++) {{ const x=PAD+k/5*cw; ctx.fillText((tmaxS*k/5).toFixed(1)+(k===5?' s':''), x-6, Hs-6); }}
       ctx.fillStyle='#9ecbff'; ctx.fillText('freq (Hz) ↑   temps →', PAD, Hs-18);
