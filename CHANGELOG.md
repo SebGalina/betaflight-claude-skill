@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- `scripts/chirp_analysis.py` evolved from a Bode analyser into a full **guided,
+  bilingual (FR/EN, live toggle) tuning assistant**, validated on real
+  `debug_mode = CHIRP` logs (BF 2025.12.3-alpha):
+  - **Firmware auto-detection** — current BF logs only `debug[0] = 5000·sinarg`;
+    the tool reconstructs the excitation, the instantaneous sweep frequency and
+    per-axis segmentation (by `setpoint` energy) from it. The legacy `debug[1..3]`
+    path is kept as a fallback. FRF input defaults to the calibrated `setpoint[i]`.
+  - Report now bundles a per-axis **step response**, a **gyro noise PSD**
+    (floor-referenced raw vs filtered, eRPM-derived **motor-harmonic bands**,
+    filter cut-off lines, disable-candidate analysis), a **chirp spectrogram**
+    (log frequency), a throttle × frequency map (motor-average fallback when
+    `rcCommand[3]` isn't logged), a **multi-pass overlay** with an exhaustive
+    settings-comparison table, and a guided **Filtering → PID → History** workflow
+    with deterministic, data-driven observations read from the log's PID/filter
+    header (no LLM at runtime).
+  - **Phase margin** is reported with an uncertainty (the scalar is sensitive to
+    the crossover; prefer the curves/step for before-after). Responsive full-width
+    layout. New flags: `--lang fr|en`, `--history`/`--no-history`, several inputs
+    for a before/after overlay.
+- `references/chirp-tuning.md` and `SKILL.md` updated for the current debug mapping
+  and the richer report; `scripts/selftest.py` adds a (dependency-guarded) chirp
+  pipeline smoke test.
+
 ## [0.2.0] — 2026-06-01
 
 ### Added

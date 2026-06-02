@@ -64,8 +64,35 @@ def test_blackbox_headers() -> bool:
     return ok
 
 
+def test_chirp() -> bool:
+    print("chirp_analysis — FRF pipeline (scripts/test/btfl_chirp.bbl)")
+    try:
+        import numpy, pandas, scipy  # noqa: F401  (heavy deps; skip cleanly if absent)
+    except ImportError:
+        print("  [SKIP] numpy/pandas/scipy not installed")
+        return True
+    log = BBL_DIR / "btfl_chirp.bbl"
+    if not log.exists():
+        print("  [SKIP] no chirp fixture (scripts/test/btfl_chirp.bbl)")
+        return True
+    from scripts import chirp_analysis as ca
+
+    tmp = ca._decode_bbl(log)
+    try:
+        df = ca._load_csv(tmp)
+        results, _tmap, _noise, _spectro = ca.analyse(df, ca._sample_rate(df), ca.DEFAULT_INPUT_COL)
+    finally:
+        tmp.unlink(missing_ok=True)
+    ok = _check("axes analysed", len(results) >= 1, f"{len(results)} axes")
+    ok &= _check(
+        "phase margin read",
+        any(a.get("phase_margin_deg") is not None for a in results.values()),
+    )
+    return ok
+
+
 def main() -> int:
-    results = [test_parse_diff(), test_blackbox_headers()]
+    results = [test_parse_diff(), test_blackbox_headers(), test_chirp()]
     print()
     if all(results):
         print("selftest: all checks passed")
