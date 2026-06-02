@@ -577,30 +577,38 @@ def _noise_spectrum(df: pd.DataFrame, fs: float, axis_idx: int, quiet_mask: np.n
     }
 
 
+def _worst_filtered_db(noise: dict) -> float | None:
+    """The loudest filtered noise peak (dB, closest to the 0 dB reference), or None."""
+    peaks = (noise or {}).get("peaks") or []
+    return max((p["db_filt"] for p in peaks), default=None)
+
+
 def _noise_suggestions(noise: dict) -> list[dict]:
-    """Filtering leads from the noise PSD peaks, judged against the -10 dB guide ({fr, en})."""
+    """Observations read off the noise PSD peaks, against the -10 dB guide ({fr, en})."""
     if not noise:
         return []
     peaks = noise.get("peaks") or []
     out = []
     if not peaks:
         out.append({
-            "fr": "Plancher de bruit propre (aucun pic >70 Hz au-dessus du seuil) : marge pour "
-                  "assouplir le filtrage (gyro/D-term plus hauts, Q plus bas) et gagner en réactivité.",
-            "en": "Clean noise floor (no >70 Hz peak above threshold): room to loosen filtering "
-                  "(higher gyro/D-term, lower Q) and gain responsiveness."})
+            "fr": "Plancher de bruit propre : aucun pic au-dessus du seuil >70 Hz — le filtrage couvre "
+                  "largement le bruit présent.",
+            "en": "Clean noise floor: no peak above the >70 Hz threshold — filtering more than covers the "
+                  "noise present."})
         return out
     for p in peaks:
         f, raw, flt = p["freq_hz"], p["db"], p["db_filt"]
+        head = (f"{f:.0f} Hz : bruit moteur/cadre à {raw:.0f} dB en brut, ramené à {flt:.0f} dB après filtres",
+                f"{f:.0f} Hz: motor/frame noise at {raw:.0f} dB raw, brought down to {flt:.0f} dB after filters")
         if flt <= NOISE_OK_DB:
-            vfr = f"après filtres {flt:.0f} dB (sous -10 dB → acceptable, marge pour réduire le filtrage à cette fréquence)"
-            ven = f"{flt:.0f} dB after filters (below -10 dB → acceptable, room to reduce filtering here)"
+            below = NOISE_OK_DB - flt
+            out.append({
+                "fr": f"{head[0]} — soit ~{below:.0f} dB sous le repère −10 dB : le filtrage est confortable ici.",
+                "en": f"{head[1]} — about {below:.0f} dB below the −10 dB guide: filtering is comfortable here."})
         else:
-            vfr = f"après filtres {flt:.0f} dB (au-dessus de -10 dB → garder/renforcer le filtrage ; vérifier dyn_notch/RPM)"
-            ven = f"{flt:.0f} dB after filters (above -10 dB → keep/strengthen filtering; check dyn_notch/RPM)"
-        out.append({
-            "fr": f"Pic de bruit {f:.0f} Hz : {raw:.0f} dB brut, {vfr}.",
-            "en": f"Noise peak {f:.0f} Hz: {raw:.0f} dB raw, {ven}."})
+            out.append({
+                "fr": f"{head[0]} — encore au-dessus de −10 dB : le filtrage travaille à cette fréquence, peu de marge.",
+                "en": f"{head[1]} — still above −10 dB: filtering is working at this frequency, little margin."})
     return out
 
 
@@ -838,84 +846,169 @@ def _filter_suggestions(throttle_map: dict, cfg: dict) -> list[dict]:
         oen = ("migrates with throttle → motor/desync (RPM filter, dyn notch)" if r["migrates"]
                else "throttle-stable → frame resonance (static notch)")
         if nmin is not None and nmax is not None and nmin <= f <= nmax:
-            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}. Dans la plage dyn_notch "
-                  f"({nmin}-{nmax} Hz, ×{cnt}, Q={q}) : si elle persiste, augmenter dyn_notch_count ou "
-                  f"dyn_notch_q, et vérifier le RPM filter.")
-            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}. Inside the dyn_notch range "
-                  f"({nmin}-{nmax} Hz, ×{cnt}, Q={q}): if it persists, raise dyn_notch_count or "
-                  f"dyn_notch_q, and check the RPM filter.")
+            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr} — dans la plage dyn_notch "
+                  f"({nmin}-{nmax} Hz, ×{cnt}, Q={q}), donc déjà ciblée. Si elle reste visible, c'est que "
+                  f"le notch ne la couvre pas assez (count ou Q insuffisant).")
+            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen} — inside the dyn_notch range "
+                  f"({nmin}-{nmax} Hz, ×{cnt}, Q={q}), so already targeted. If it remains visible, the notch "
+                  f"isn't covering it enough (count or Q too low).")
         elif nmax is not None and f > nmax:
-            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}, AU-DESSUS de dyn_notch_max ({nmax} Hz) "
-                  f"→ non filtrée. Piste : relever dyn_notch_max_hz vers ~{int(f + 50)}, ou baisser "
-                  f"gyro_lpf1 si bruit moteur large.")
-            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}, ABOVE dyn_notch_max ({nmax} Hz) → "
-                  f"unfiltered. Lead: raise dyn_notch_max_hz toward ~{int(f + 50)}, or lower gyro_lpf1 "
-                  f"if broadband motor noise.")
+            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr} — AU-DESSUS de dyn_notch_max ({nmax} Hz), "
+                  f"donc hors de portée du notch : un dyn_notch_max plus haut (~{int(f + 50)}) la couvrirait.")
+            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen} — ABOVE dyn_notch_max ({nmax} Hz), so beyond "
+                  f"the notch's reach: a higher dyn_notch_max (~{int(f + 50)}) would cover it.")
         elif nmin is not None and f < nmin:
-            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}, SOUS dyn_notch_min ({nmin} Hz). "
-                  f"Piste : baisser dyn_notch_min_hz vers ~{max(60, int(f - 20))}.")
-            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}, BELOW dyn_notch_min ({nmin} Hz). "
-                  f"Lead: lower dyn_notch_min_hz toward ~{max(60, int(f - 20))}.")
+            fr = (f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr} — SOUS dyn_notch_min ({nmin} Hz), "
+                  f"donc hors plage : un dyn_notch_min plus bas (~{max(60, int(f - 20))}) la prendrait.")
+            en = (f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen} — BELOW dyn_notch_min ({nmin} Hz), so out of "
+                  f"range: a lower dyn_notch_min (~{max(60, int(f - 20))}) would catch it.")
         else:
             fr = f"Résonance {f:.0f} Hz (+{pr:.0f} dB), {ofr}."
             en = f"Resonance {f:.0f} Hz (+{pr:.0f} dB), {oen}."
         sug.append({"freq_hz": f, "fr": fr, "en": en})
     if not sug:
         sug.append({"freq_hz": None,
-                    "fr": (f"Aucune résonance marquée (>70 Hz) dans la carte throttle : le filtrage actuel "
-                           f"(dyn_notch ×{cnt} Q={q}, RPM filter ×{cfg.get('rpm_harmonics')}) paraît suffisant. "
-                           f"Marge possible pour assouplir (Q ou count plus bas) et réduire le retard de phase "
-                           f"si les marges de phase le permettent."),
-                    "en": (f"No prominent resonance (>70 Hz) in the throttle map: current filtering "
-                           f"(dyn_notch ×{cnt} Q={q}, RPM filter ×{cfg.get('rpm_harmonics')}) looks sufficient. "
-                           f"Room to loosen it (lower Q or count) to cut phase lag if the phase margins allow.")})
+                    "fr": (f"Aucune résonance marquée (>70 Hz) dans la carte throttle : le filtrage en place "
+                           f"(dyn_notch ×{cnt} Q={q}, RPM filter ×{cfg.get('rpm_harmonics')}) tient le spectre "
+                           f"propre — voir le spectre de bruit pour la marge réelle d'assouplissement."),
+                    "en": (f"No prominent resonance (>70 Hz) in the throttle map: the filtering in place "
+                           f"(dyn_notch ×{cnt} Q={q}, RPM filter ×{cfg.get('rpm_harmonics')}) keeps the spectrum "
+                           f"clean — see the noise spectrum for the actual room to loosen it.")})
     return sug
 
 
-def _pid_suggestions(axes: dict, cfg: dict) -> dict:
-    """Per-axis PID leads from the phase margin, read against the current P/D — {fr, en} each."""
+def _pid_suggestions(axes: dict, cfg: dict, noise: dict | None = None) -> dict:
+    """Per-axis observations from the phase margin + step, cross-linked to the filtering
+    headroom (constatation style, not prescriptions) — {fr, en} each."""
     out: dict = {}
     pids = cfg.get("pids") or {}
+    worst = _worst_filtered_db(noise)
+    has_margin = worst is not None and worst <= -15.0   # clear filtering headroom -> phase to gain back
+    # cross-link clause used on margin-limited axes
+    if has_margin:
+        link_fr = " Comme le spectre de bruit montre de la marge de filtrage, l'alléger relèverait d'abord cette marge sans toucher aux gains"
+        link_en = " Since the noise spectrum shows filtering headroom, loosening it would lift this margin first without touching the gains"
+    else:
+        link_fr = link_en = ""
     for axis, d in axes.items():
         m = d.get("phase_margin_deg")
         fco = d.get("crossover_hz")
         p = pids.get(axis)
         P, D = (p[0], p[2]) if p else (None, None)
-        pd = f"P={P}, D={D}" if p else "PID ?"
+        pd = f"P={P}/D={D}" if p else "PID ?"
+        ov = (d.get("step") or {}).get("metrics", {}).get("overshoot_pct")
+        ovf = f", la step montre {ov:.0f}% d'overshoot" if ov is not None else ""
+        ove = f", the step shows {ov:.0f}% overshoot" if ov is not None else ""
+        at = f"@ {fco:.0f} Hz" if fco else ""
         if m is None:
             out[axis] = {
-                "fr": f"Pas de crossover 0 dB dans la bande cohérente — tune conservateur ou signal trop bruité. ({pd})",
-                "en": f"No 0 dB crossover in the coherent band — conservative tune or too-noisy signal. ({pd})"}
-            continue
-        at = f"@ {fco:.0f} Hz" if fco else ""
-        if m <= 5:
-            tf = f" (essayer P {P}→~{int(round(P*0.85))})" if P else ""
-            te = f" (try P {P}→~{int(round(P*0.85))})" if P else ""
+                "fr": f"Pas de crossover 0 dB dans la bande cohérente : la boucle reste sous 0 dB (tune conservateur) "
+                      f"ou la cohérence est trop basse pour lire la marge. ({pd})",
+                "en": f"No 0 dB crossover in the coherent band: the loop stays below 0 dB (conservative tune) or "
+                      f"coherence is too low to read the margin. ({pd})"}
+        elif m <= 5:
+            if has_margin:
+                tf, te = link_fr + ".", link_en + "."
+            elif P:
+                tf = f" Les réduire (P vers ~{int(round(P*0.85))}) ramènerait la marge en positif."
+                te = f" Reducing them (P toward ~{int(round(P*0.85))}) would bring the margin positive."
+            else:
+                tf = te = ""
             out[axis] = {
-                "fr": f"⚠ Marge {m:.0f}° {at} : boucle au bord de l'oscillation / ring. Piste : baisser P{tf} "
-                      f"et/ou D ({D}), ou renforcer le filtrage D-term (dterm_lpf1 plus bas). À valider en vol. ({pd})",
-                "en": f"⚠ Margin {m:.0f}° {at}: loop on the edge of oscillation / ringing. Lead: lower P{te} "
-                      f"and/or D ({D}), or strengthen D-term filtering (lower dterm_lpf1). Flight-test it. ({pd})"}
+                "fr": f"Marge {m:.0f}° {at} — négative/quasi nulle : la boucle est au bord de l'auto-oscillation "
+                      f"(le Bode passe −180° avec gain ≥ 0 dB{ovf}). À {pd}, les gains sont trop hauts pour la "
+                      f"marge disponible.{tf}",
+                "en": f"Margin {m:.0f}° {at} — negative/near zero: the loop is on the edge of self-oscillation "
+                      f"(the Bode passes −180° with gain ≥ 0 dB{ove}). At {pd}, the gains are too high for the "
+                      f"available margin.{te}"}
         elif m < 20:
-            tf = f" (~{P}→{int(round(P*0.9))})" if P else ""
+            if has_margin:
+                tf, te = link_fr + ".", link_en + "."
+            elif P:
+                tf = f" Réduire un peu P (vers ~{int(round(P*0.9))}) l'assainirait."
+                te = f" A small P cut (toward ~{int(round(P*0.9))}) would clean it up."
+            else:
+                tf = te = ""
             out[axis] = {
-                "fr": f"Marge faible {m:.0f}° {at}. Piste : réduire légèrement P{tf} ou ajouter du filtrage ; "
-                      f"surveiller propwash. ({pd})",
-                "en": f"Low margin {m:.0f}° {at}. Lead: slightly reduce P{tf} or add filtering; watch propwash. ({pd})"}
+                "fr": f"Marge faible {m:.0f}° {at} : la boucle rebondit encore{ovf}. {pd}.{tf}",
+                "en": f"Low margin {m:.0f}° {at}: the loop still bounces{ove}. {pd}.{te}"}
         elif m < 35:
             out[axis] = {
-                "fr": f"Marge correcte mais limite {m:.0f}° {at} : tune sain, peu de changement. ({pd})",
-                "en": f"OK-but-limited margin {m:.0f}° {at}: healthy tune, little to change. ({pd})"}
+                "fr": f"Marge correcte mais limite {m:.0f}° {at}{ovf} : tune sain, peu de marge à regagner côté gains. ({pd})",
+                "en": f"OK-but-limited margin {m:.0f}° {at}{ove}: healthy tune, little margin to gain on the gains. ({pd})"}
         elif m < 55:
-            out[axis] = {"fr": f"Marge saine {m:.0f}° {at}. ({pd})", "en": f"Healthy margin {m:.0f}° {at}. ({pd})"}
-        else:
-            tf = f" (P {P}→~{int(round(P*1.12))})" if P else ""
             out[axis] = {
-                "fr": f"Grande marge {m:.0f}° {at} → réponse possiblement molle. Piste : augmenter P{tf} pour "
-                      f"plus de réactivité si le ressenti est mou ; surveiller bruit/chaleur moteur. ({pd})",
-                "en": f"Large margin {m:.0f}° {at} → possibly sluggish response. Lead: raise P{tf} for more "
-                      f"sharpness if it feels soft; watch motor noise/heat. ({pd})"}
+                "fr": f"Marge saine {m:.0f}° {at}{ovf} : axe bien amorti. ({pd})",
+                "en": f"Healthy margin {m:.0f}° {at}{ove}: well-damped axis. ({pd})"}
+        else:
+            out[axis] = {
+                "fr": f"Grande marge {m:.0f}° {at}{ovf} → réserve confortable : une fois le filtrage figé, c'est "
+                      f"l'axe où P ({P}) a le plus de place pour monter si le ressenti est mou. ({pd})",
+                "en": f"Large margin {m:.0f}° {at}{ove} → comfortable reserve: once filtering is frozen, this is the "
+                      f"axis where P ({P}) has the most room to rise if it feels soft. ({pd})"}
     return out
+
+
+def _synthesis(axes: dict, noise: dict, config: dict, throttle_max: float | None = None) -> list[dict]:
+    """Top-level 'read' of the whole report as linked observations (filter -> phase -> P/D).
+
+    Data-driven: it states what the curves show and how the levers chain, without prescribing.
+    """
+    obs: list[dict] = []
+    worst = _worst_filtered_db(noise)
+    has_unfilt = (noise or {}).get("has_unfilt")
+    margin_avail = worst is not None and worst <= -15.0
+    margins = {ax: d["phase_margin_deg"] for ax, d in axes.items() if d.get("phase_margin_deg") is not None}
+    low = {ax: mv for ax, mv in margins.items() if mv < 35.0}
+    low_str = ", ".join(f"{ax} {mv:.0f}°" for ax, mv in low.items())
+
+    # 1) Filtering state
+    if worst is not None:
+        if has_unfilt and margin_avail:
+            obs.append({
+                "fr": f"Filtrage — le gyro filtré reste très bas (pic le plus fort à {worst:.0f} dB, loin sous le "
+                      f"repère −10 dB) : le filtrage en place est plus fort que ne l'exige le bruit présent.",
+                "en": f"Filtering — the filtered gyro stays very low (loudest peak at {worst:.0f} dB, well below the "
+                      f"−10 dB guide): current filtering is stronger than the present noise requires."})
+        elif worst <= NOISE_OK_DB:
+            obs.append({
+                "fr": f"Filtrage — pic filtré le plus fort à {worst:.0f} dB, sous −10 dB mais avec peu de réserve : "
+                      f"marge de filtrage limitée.",
+                "en": f"Filtering — loudest filtered peak at {worst:.0f} dB, below −10 dB but with little headroom: "
+                      f"limited filtering margin."})
+        else:
+            obs.append({
+                "fr": f"Filtrage — un pic filtré atteint {worst:.0f} dB, au-dessus de −10 dB : le filtrage est "
+                      f"nécessaire ici, pas de marge pour l'alléger.",
+                "en": f"Filtering — a filtered peak reaches {worst:.0f} dB, above −10 dB: filtering is needed here, "
+                      f"no room to loosen it."})
+
+    # 2) The chain filter -> phase -> P/D
+    if margin_avail and low:
+        obs.append({
+            "fr": f"Chaînage — ces marges de phase basses ({low_str}) sont aujourd'hui le facteur limitant. Alléger "
+                  f"le filtrage réduit le retard de phase, donc relèverait d'abord ces marges ; et une marge "
+                  f"regagnée, c'est ensuite du headroom pour monter P et D sans que la boucle oscille.",
+            "en": f"Chain — these low phase margins ({low_str}) are the current limiting factor. Loosening the "
+                  f"filtering cuts phase lag, so it would lift these margins first; and margin regained is then "
+                  f"headroom to raise P and D without the loop oscillating."})
+    elif low:
+        obs.append({
+            "fr": f"Chaînage — marges basses ({low_str}) mais peu de marge de filtrage : ici le levier direct est "
+                  f"de réduire P/D plutôt que de toucher au filtre.",
+            "en": f"Chain — low margins ({low_str}) but little filtering room: here the direct lever is reducing "
+                  f"P/D rather than the filtering."})
+
+    # 3) Throttle-coverage caveat
+    if throttle_max is not None and throttle_max < 1450:
+        obs.append({
+            "fr": f"Réserve — ce log monte peu en gaz (~{throttle_max:.0f} sur 2000) : la marge de bruit est "
+                  f"mesurée à bas régime, or le bruit moteur augmente avec le throttle. À confirmer avec une passe "
+                  f"plus engagée avant d'alléger franchement le filtrage.",
+            "en": f"Caveat — this log barely climbs in throttle (~{throttle_max:.0f} of 2000): the noise margin is "
+                  f"measured at low rpm, and motor noise grows with throttle. Confirm with a more aggressive pass "
+                  f"before loosening the filtering for real."})
+    return obs
 
 
 # ---------------------------------------------------------------------------
@@ -932,19 +1025,26 @@ def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
                                            fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg)
     config = _parse_header_config(path) if path.suffix.lower() in (".bbl", ".bfl") else {}
     nyq = fs / 2.0
+    throttle_max = None
+    if THROTTLE_COL in df.columns:
+        thr = df[THROTTLE_COL].to_numpy(float)
+        fly = thr[thr > THROTTLE_IDLE]
+        throttle_max = round(float(fly.max()), 0) if fly.size else None
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
         "file": path.name,
         "sample_rate_hz": round(fs),
         "input_col": args.input_col,
         "band_hz": [args.fmin, round(min(args.fmax, nyq * 0.98), 1)],
+        "throttle_max": throttle_max,
         "config": config,
         "axes": results,
         "throttle_map": throttle_map,
         "noise_spectrum": noise,
+        "synthesis": _synthesis(results, noise, config, throttle_max),
         "filter_suggestions": _filter_suggestions(throttle_map, config) if config else [],
         "noise_suggestions": _noise_suggestions(noise),
-        "pid_suggestions": _pid_suggestions(results, config) if config else {},
+        "pid_suggestions": _pid_suggestions(results, config, noise) if config else {},
     }
 
 
@@ -1187,6 +1287,7 @@ STRINGS = {
         "guide_add": "➕ Pour ajouter une passe : modifie filtres/PID, refais un log chirp, puis relance "
                      "<code>chirp_analysis.py nouveau.bbl --html report.html</code> — il s'ajoute à l'historique.",
         "cfg_h": "Réglages actuels", "cfg_sub": "(extraits du log — passe de référence)",
+        "synth_h": "Lecture d'ensemble",
         "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
         "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
         "noise_h": "Spectre de bruit gyro (PSD, dB)",
@@ -1226,6 +1327,7 @@ STRINGS = {
         "guide_add": "➕ To add a pass: change filters/PID, re-fly a chirp log, then re-run "
                      "<code>chirp_analysis.py new.bbl --html report.html</code> — it appends to the history.",
         "cfg_h": "Current settings", "cfg_sub": "(read from the log — reference pass)",
+        "synth_h": "Overview",
         "step1_h": "Filtering", "step1_sub": "— set this first",
         "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
         "noise_h": "Gyro noise spectrum (PSD, dB)",
@@ -1421,6 +1523,14 @@ function render() {{
     if (CFG.dterm_lpf1) s+='<b>'+tip('dterm_lpf','D-term')+'</b> lpf1 '+(CFG.dterm_lpf1.dyn?CFG.dterm_lpf1.dyn.join('–'):CFG.dterm_lpf1.static)+' Hz, lpf2 '+(CFG.dterm_lpf2?CFG.dterm_lpf2.static:'?')+' Hz<br>';
     if (CFG.dyn_notch) s+='<b>'+tip('dyn_notch','dyn_notch')+'</b> ×'+CFG.dyn_notch.count+' Q'+CFG.dyn_notch.q+' ['+CFG.dyn_notch.min+'–'+CFG.dyn_notch.max+' Hz] &nbsp; <b>'+tip('rpm_filter','RPM filter')+'</b> ×'+CFG.rpm_harmonics;
     s+='</div>'; cb.innerHTML=s; root.appendChild(cb);
+  }}
+
+  // ---- Overview (linked observations: filter -> phase -> P/D) ----
+  if (PRI.synthesis && PRI.synthesis.length) {{
+    const box=el('div','axis guide'); root.appendChild(box);
+    box.appendChild(el('h2',null,T('synth_h')));
+    const ul=el('ul','sugg'); for (const o of PRI.synthesis) ul.appendChild(el('li',null,loc(o)));
+    box.appendChild(ul);
   }}
 
   // ---- Step 1: Filtering ----
@@ -1628,6 +1738,12 @@ def _print_human(report: dict, lang: str = "fr") -> None:
     if tm:
         print(f"Throttle map     : {tm['axis']} gyro, {len(tm['throttle_bins'])} throttle bins "
               f"× {len(tm['freqs'])} freqs (see --html / --json for the heatmap)")
+
+    synth = output.get("synthesis") or []
+    if synth:
+        print("\n=== Lecture d'ensemble ===" if lang == "fr" else "\n=== Overview ===")
+        for o in synth:
+            print(f"  - {loc(o)}")
 
     pid_sug = output.get("pid_suggestions") or {}
     flt_sug = output.get("filter_suggestions") or []
