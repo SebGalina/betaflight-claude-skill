@@ -455,14 +455,28 @@ def _step_diagnosis(m: dict) -> list[dict]:
 # Throttle x frequency resonance map
 # ---------------------------------------------------------------------------
 
+def _throttle_series(df: pd.DataFrame) -> tuple:
+    """A 'throttle' axis for binning: rcCommand[3] if logged, else the motor-output average
+    (DShot scale) — so logs that don't log rcCommand still get a throttle map. Returns
+    (values, idle_threshold, source_label) or (None, None, None)."""
+    if THROTTLE_COL in df.columns:
+        return df[THROTTLE_COL].to_numpy(float), float(THROTTLE_IDLE), "rcCommand[3]"
+    mc = [f"motor[{i}]" for i in range(4) if f"motor[{i}]" in df.columns]
+    if mc:
+        v = df[mc].to_numpy(float).mean(axis=1)
+        lo, hi = float(np.percentile(v, 2)), float(np.percentile(v, 98))
+        return v, lo + 0.10 * (hi - lo), "motor avg"        # idle/spool floor + margin
+    return None, None, None
+
+
 def _throttle_map(df: pd.DataFrame, fs: float, axis_idx: int, fmin: float, fmax: float,
                   nbins: int = THROTTLE_BINS) -> dict:
     """PSD of gyro per throttle slice -> heatmap of how resonances migrate with throttle."""
     gcol = GYRO_COL.format(axis_idx)
-    if gcol not in df.columns or THROTTLE_COL not in df.columns:
+    thr, idle, src = _throttle_series(df)
+    if gcol not in df.columns or thr is None:
         return {}
-    thr = df[THROTTLE_COL].to_numpy(float)
-    flying = thr > THROTTLE_IDLE
+    flying = thr > idle
     if flying.sum() < 1024:
         return {}
     lo, hi = float(np.min(thr[flying])), float(np.max(thr[flying]))
@@ -503,6 +517,7 @@ def _throttle_map(df: pd.DataFrame, fs: float, axis_idx: int, fmin: float, fmax:
     step = max(1, width // 200)
     return {
         "axis": AXES[axis_idx],
+        "source": src,
         "throttle_bins": centers,
         "freqs": [round(float(x), 1) for x in freqs_ref[::step]],
         "levels_db": [row[::step] for row in levels],
@@ -790,8 +805,9 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             quiet = ~active
         else:
             quiet = np.ones(len(df), dtype=bool)
-        if THROTTLE_COL in df.columns:
-            quiet = quiet & (df[THROTTLE_COL].to_numpy() > THROTTLE_IDLE)
+        thr, idle, _ = _throttle_series(df)
+        if thr is not None:
+            quiet = quiet & (thr > idle)
         noise = _noise_spectrum(df, fs, primary_axis_idx, quiet, fmin=30.0, fmax=fmax)
 
     return results, throttle_map, noise
@@ -1090,9 +1106,9 @@ def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
     config = _parse_header_config(path) if path.suffix.lower() in (".bbl", ".bfl") else {}
     nyq = fs / 2.0
     throttle_max = None
-    if THROTTLE_COL in df.columns:
-        thr = df[THROTTLE_COL].to_numpy(float)
-        fly = thr[thr > THROTTLE_IDLE]
+    thr, idle, thr_src = _throttle_series(df)
+    if thr is not None and thr_src == "rcCommand[3]":   # only meaningful as a stick % vs 2000
+        fly = thr[thr > idle]
         throttle_max = round(float(fly.max()), 0) if fly.size else None
     return {
         "timestamp": datetime.now().isoformat(timespec="seconds"),
@@ -1374,6 +1390,7 @@ STRINGS = {
         "synth_h": "Lecture d'ensemble",
         "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
         "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
+        "tmap_none": "indisponible (ni rcCommand[3] ni motor loggés). Active le throttle/les moteurs en blackbox.",
         "noise_h": "Spectre de bruit gyro (PSD, dB)",
         "noise_cap": "{psd} — brut (gyroUnfilt) vs filtré (gyroADC), hors chirp. 0 dB = plancher de bruit ; "
                      "un pic dont le résiduel filtré retombe dans le plancher est aplati. Le repère +6 dB est "
@@ -1420,6 +1437,7 @@ STRINGS = {
         "synth_h": "Overview",
         "step1_h": "Filtering", "step1_sub": "— set this first",
         "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
+        "tmap_none": "unavailable (neither rcCommand[3] nor motors logged). Enable throttle/motors in blackbox.",
         "noise_h": "Gyro noise spectrum (PSD, dB)",
         "noise_cap": "{psd} — raw (gyroUnfilt) vs filtered (gyroADC), outside the chirp. 0 dB = noise floor; a "
                      "peak whose filtered residual falls back into the floor is flattened. The +6 dB line is "
@@ -1651,7 +1669,7 @@ function render() {{
     box.appendChild(el('h2',null,'<span class=stepnum>1</span>'+tip('gyro_lpf',T('step1_h'))+' '+T('step1_sub')));
     const tm=PRI.throttle_map;
     if (tm && tm.freqs && tm.freqs.length) {{
-      box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro)'));
+      box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro · '+(tm.source||'?')+')'));
       const rows=tm.levels_db.length, cols=tm.freqs.length;
       const flat=tm.levels_db.flat().filter(v=>v!==null);
       const lo=Math.min(...flat), hi=Math.max(...flat);
@@ -1676,6 +1694,8 @@ function render() {{
         if(lab){{ctx.fillStyle=col; ctx.fillText(lab,x+2,18);}} }};
       if (CFG.dyn_notch) {{ tvl(CFG.dyn_notch.min,'#ffd479','dyn_notch'); tvl(CFG.dyn_notch.max,'#ffd479',''); }}
       for (const su of (PRI.filter_suggestions||[])) tvl(su.freq_hz,'#ff8a80','rés');
+    }} else {{
+      box.appendChild(el('p','meta',tip('throttle_map',T('tmap_h'))+' — '+T('tmap_none')));
     }}
 
     // noise spectrum (raw vs filtered PSD, dB) — drives the filtering decision
@@ -1690,14 +1710,15 @@ function render() {{
       const H3=180, nc=mkCanvas(box,H3).getContext('2d');
       drawAxes(nc,H3,fmin,fmax,lo,hi,'dB/plancher');
       if (CFG.dyn_notch) vband(nc,H3,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
-      // filter transfer functions — show WHERE each gyro LPF attenuates (rolloff curve, anchored at the floor)
-      const ORD={{PT1:1,PT2:2,PT3:3,BIQUAD:2}};
-      const lpfDb=(f,fc,o)=>-10*o*Math.log10(1+Math.pow(f/fc,2));
-      const drawLpf=(fc,o,col,lab)=>{{ if(!fc)return; nc.strokeStyle=col; nc.lineWidth=1.2; nc.setLineDash([5,3]); nc.beginPath();
-        let st=false; for(let f=fmin;f<=fmax;f*=1.03){{ const y=lerp(Math.max(lpfDb(f,fc,o),lo),lo,hi,H3-22,8), x=logx(f,fmin,fmax); st?nc.lineTo(x,y):nc.moveTo(x,y); st=true; }}
-        nc.stroke(); nc.setLineDash([]); if(lab){{ const xc=logx(fc,fmin,fmax); nc.fillStyle=col; nc.fillText(lab,Math.min(xc,W-60),30); }} }};
-      if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ const o=ORD[CFG.gyro_lpf1.type]||1; drawLpf(CFG.gyro_lpf1.dyn[0],o,'#5a9bd4','LPF1↓'); drawLpf(CFG.gyro_lpf1.dyn[1],o,'#5a9bd4','LPF1↑'); }}
-      if (CFG.gyro_lpf2 && CFG.gyro_lpf2.static) {{ const o=ORD[CFG.gyro_lpf2.type]||1; drawLpf(CFG.gyro_lpf2.static,o,'#b0a0ff','LPF2'); }}
+      // vertical lines = each filter's cut-off frequency (the LPF starts attenuating above it)
+      nc.font='10px sans-serif';
+      const vcut=(fc,col,lab,yl)=>{{ if(!fc||fc<fmin||fc>fmax)return; const x=logx(fc,fmin,fmax);
+        nc.strokeStyle=col; nc.lineWidth=1; nc.setLineDash([3,3]); nc.beginPath(); nc.moveTo(x,8); nc.lineTo(x,H3-22); nc.stroke(); nc.setLineDash([]);
+        if(lab){{ nc.fillStyle=col; nc.fillText(lab,Math.min(x+2,W-44),yl||16); }} }};
+      if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ vcut(CFG.gyro_lpf1.dyn[0],'#5a9bd4'); vcut(CFG.gyro_lpf1.dyn[1],'#5a9bd4','gLPF1',16); }}
+      if (CFG.gyro_lpf2) vcut(CFG.gyro_lpf2.static,'#79c0ff','gLPF2',16);
+      if (CFG.dterm_lpf1 && CFG.dterm_lpf1.dyn) vcut(CFG.dterm_lpf1.dyn[1],'#d48fd4','dLPF1',28);
+      if (CFG.dterm_lpf2) vcut(CFG.dterm_lpf2.static,'#d48fd4','dLPF2',28);
       hline(nc,H3,0,lo,hi,'#7e8aa0','plancher');                              // 0 dB = noise floor
       hline(nc,H3,{RESIDUAL_OK_DB:g},lo,hi,'#ff8a80','+{RESIDUAL_OK_DB:g} dB');  // indicative residual-resonance guide
       const ones=F.map(_=>1);
@@ -1713,8 +1734,8 @@ function render() {{
         (ns.has_unfilt?('<span style="color:#4fc3f7">— '+T('leg_raw')+'</span><span style="color:#80cbc4">— '+T('leg_filt')+'</span>'):'<span style="color:#4fc3f7">— gyro</span>')+
         '<span style="color:#7e8aa0">-- '+T('leg_floor')+'</span>'+
         '<span style="color:#ff8a80">-- '+T('leg_resid')+'</span>'+
-        '<span style="color:#5a9bd4">-- '+tip('gyro_lpf','gyro LPF1')+'</span>'+
-        '<span style="color:#b0a0ff">-- LPF2</span>'+
+        '<span style="color:#5a9bd4">| '+tip('gyro_lpf','coupures gyro LPF')+'</span>'+
+        '<span style="color:#d48fd4">| '+tip('dterm_lpf','coupures D-term LPF')+'</span>'+
         '<span style="color:#ffd479">▮ '+tip('dyn_notch','dyn_notch')+'</span>'));
       box.appendChild(el('div','legend',(ns.has_unfilt?T('noise_cap'):T('noise_cap_nounfilt')).replace('{{psd}}',tip('noise_psd','PSD'))));
     }}
