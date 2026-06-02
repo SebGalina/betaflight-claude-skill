@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-06-02
+
 ### Changed
 - `scripts/chirp_analysis.py` evolved from a Bode analyser into a full **guided,
   bilingual (FR/EN, live toggle) tuning assistant**, validated on real
