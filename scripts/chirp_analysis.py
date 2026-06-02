@@ -1126,28 +1126,45 @@ def _save_history(path: Path, passes: list) -> None:
         print(f"Warning: could not write history {path}: {e}", file=sys.stderr)
 
 
+def _config_fields(cfg: dict) -> list[tuple]:
+    """Flat, ordered (label, value) list of the comparable PID + filter fields — the single
+    source of truth for both the textual diff and the HTML comparison table."""
+    if not cfg:
+        return []
+    out = []
+    for ax in AXES:
+        p = (cfg.get("pids") or {}).get(ax)
+        if p:
+            out.append((f"{ax} P/I/D", "/".join(map(str, p))))
+    if cfg.get("d_max"):
+        out.append(("D_max", "/".join(map(str, cfg["d_max"]))))
+
+    def lpf(key, lbl):
+        d = cfg.get(key) or {}
+        v = d.get("dyn") or d.get("static")
+        if v is not None:
+            vs = "–".join(map(str, v)) if isinstance(v, list) else str(v)
+            out.append((lbl, (f"{vs} Hz {d.get('type') or ''}").strip()))
+
+    lpf("gyro_lpf1", "gyro LPF1")
+    lpf("gyro_lpf2", "gyro LPF2")
+    lpf("dterm_lpf1", "D-term LPF1")
+    lpf("dterm_lpf2", "D-term LPF2")
+    dn = cfg.get("dyn_notch") or {}
+    if dn.get("count") is not None:
+        out.append(("dyn_notch", f"×{dn.get('count')} Q{dn.get('q')} [{dn.get('min')}–{dn.get('max')} Hz]"))
+    if cfg.get("rpm_harmonics") is not None:
+        out.append(("RPM filter", f"×{cfg['rpm_harmonics']}"))
+    return out
+
+
 def _config_diff(prev: dict, cur: dict) -> str:
-    """Short human summary of what changed between two passes' tuning configs."""
+    """Exhaustive human summary of what changed between two passes' tuning configs."""
     if not prev or not cur:
         return ""
-    changes = []
-    for ax in AXES:
-        a = (prev.get("pids") or {}).get(ax)
-        b = (cur.get("pids") or {}).get(ax)
-        if a and b and a != b:
-            for i, nm in enumerate(("P", "I", "D")):
-                if a[i] != b[i]:
-                    changes.append(f"{ax} {nm} {a[i]}→{b[i]}")
-    for name in ("gyro_lpf1", "dterm_lpf1"):
-        a = (prev.get(name) or {})
-        b = (cur.get(name) or {})
-        av, bv = a.get("dyn") or a.get("static"), b.get("dyn") or b.get("static")
-        if av is not None and bv is not None and av != bv:
-            changes.append(f"{name} {av}→{bv}")
-    a, b = (prev.get("dyn_notch") or {}), (cur.get("dyn_notch") or {})
-    for f in ("count", "q", "min", "max"):
-        if a.get(f) is not None and b.get(f) is not None and a.get(f) != b.get(f):
-            changes.append(f"dyn_notch.{f} {a.get(f)}→{b.get(f)}")
+    pf, cf = dict(_config_fields(prev)), dict(_config_fields(cur))
+    changes = [f"{k} {pf.get(k)}→{cf[k]}" for k, _ in _config_fields(cur)
+               if k in pf and pf[k] != cf[k]]
     return ", ".join(changes)
 
 
@@ -1374,6 +1391,9 @@ STRINGS = {
         "step3_single": "Une seule passe pour l'instant. Refais un log chirp après tes modifs : il s'empilera "
                         "ici pour la comparaison avant/après.",
         "step3_changes": "↳ changements vs passe précédente :",
+        "cmp_h": "Comparaison des réglages",
+        "cmp_none": "Réglages PID + filtres identiques sur toutes les passes — les écarts de courbes "
+                    "viennent du vol (batterie, throttle, bruit), pas du tune.",
         "glossary_h": "Glossaire",
         "w_filt": "le filtrage", "w_pid": "les PID", "w_phase": "phase",
         "w_pm": "marge de stabilité", "w_res": "résonances",
@@ -1417,6 +1437,9 @@ STRINGS = {
         "step3_single": "Only one pass so far. Re-fly a chirp log after your changes: it will stack up here for "
                         "before/after comparison.",
         "step3_changes": "↳ changes vs previous pass:",
+        "cmp_h": "Settings comparison",
+        "cmp_none": "Identical PID + filter settings across all passes — curve differences come from the "
+                    "flight (battery, throttle, noise), not the tune.",
         "glossary_h": "Glossary",
         "w_filt": "filtering", "w_pid": "the PIDs", "w_phase": "phase",
         "w_pm": "stability margin", "w_res": "resonances",
@@ -1467,6 +1490,11 @@ def _html_report(report: dict, file_name: str) -> str:
   .glos dd {{ margin:2px 0 0; color:#c2cad6; }}
   .swatch {{ display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:5px; vertical-align:middle; }}
   .diff {{ color:#ffd479; }}
+  table.cmp {{ border-collapse:collapse; font-size:12px; margin-top:8px; }}
+  table.cmp th, table.cmp td {{ border:1px solid #2a2f3a; padding:3px 9px; text-align:left; color:#c2cad6; }}
+  table.cmp th {{ color:#9ecbff; font-weight:600; }}
+  table.cmp td.lbl {{ color:#8893a5; }}
+  table.cmp td.chg {{ color:#ffd479; font-weight:600; background:#241f12; }}
   .langbtn {{ position:fixed; top:16px; right:16px; z-index:30; background:#28425c; color:#cfe3ff;
      border:1px solid #3a5a78; border-radius:6px; padding:5px 12px; cursor:pointer; font:600 12px system-ui; }}
   .twocol {{ display:flex; gap:14px; flex-wrap:wrap; }}
@@ -1498,6 +1526,17 @@ function tip(k,label) {{ const g=GL[k]||{{}}; const t=(g[LANG]||g.fr||'').replac
   return '<span class="term" data-tip="'+t+'">'+(label||k)+'</span>'; }}
 function loc(o) {{ return o ? (o[LANG]||o.fr||o.en||'') : ''; }}
 function passLabel(p) {{ return T('pass_word')+' '+p.n+' — '+p.ts+(p.file?(' ('+p.file+')'):''); }}
+function cfgFields(cfg) {{
+  if (!cfg) return [];
+  const o=[];
+  for (const ax of ['roll','pitch','yaw']) {{ const p=(cfg.pids||{{}})[ax]; if (p) o.push([ax+' P/I/D', p.join('/')]); }}
+  if (cfg.d_max) o.push(['D_max', cfg.d_max.join('/')]);
+  const lpf=(key,lbl)=>{{ const d=cfg[key]||{{}}; const v=(d.dyn||d.static); if(v!=null){{ const vs=Array.isArray(v)?v.join('–'):v; o.push([lbl,(vs+' Hz '+(d.type||'')).trim()]); }} }};
+  lpf('gyro_lpf1','gyro LPF1'); lpf('gyro_lpf2','gyro LPF2'); lpf('dterm_lpf1','D-term LPF1'); lpf('dterm_lpf2','D-term LPF2');
+  const dn=cfg.dyn_notch||{{}}; if(dn.count!=null) o.push(['dyn_notch','×'+dn.count+' Q'+dn.q+' ['+dn.min+'–'+dn.max+' Hz]']);
+  if(cfg.rpm_harmonics!=null) o.push(['RPM filter','×'+cfg.rpm_harmonics]);
+  return o;
+}}
 function el(tag,cls,html) {{ const e=document.createElement(tag); if(cls)e.className=cls; if(html!=null)e.innerHTML=html; return e; }}
 function mkCanvas(parent,h) {{ const c=document.createElement('canvas'); c.width=W; c.height=h; parent.appendChild(c); return c; }}
 function lerp(v,a,b,A,B) {{ return A + (v-a)*(B-A)/((b-a)||1); }}
@@ -1760,6 +1799,25 @@ function render() {{
     }});
     if (PASSES.length<=1) s+='<p class=meta>'+T('step3_single')+'</p>';
     s+='</div>'; box.appendChild(el('div',null,s));
+    // exhaustive settings comparison table (PID + every filter), changed cells highlighted
+    if (PASSES.length>=2) {{
+      const ref=PASSES.map(p=>cfgFields(p.config||{{}})).filter(a=>a.length).slice(-1)[0]||[];
+      if (ref.length) {{
+        let changedAny=false, t='<h3>'+T('cmp_h')+'</h3><table class=cmp><tr><th></th>';
+        PASSES.forEach((p,i)=>{{ t+='<th><span class=swatch style="background:'+PAL[i%PAL.length]+'"></span>'+T('pass_word')+' '+p.n+'</th>'; }});
+        t+='</tr>';
+        for (const [lbl] of ref) {{
+          t+='<tr><td class=lbl>'+lbl+'</td>'; let prev=null;
+          PASSES.forEach(p=>{{ const m=Object.fromEntries(cfgFields(p.config||{{}})); const v=(lbl in m)?m[lbl]:'—';
+            const chg=(prev!==null && v!==prev); if(chg)changedAny=true;
+            t+='<td'+(chg?' class=chg':'')+'>'+v+'</td>'; prev=v; }});
+          t+='</tr>';
+        }}
+        t+='</table>';
+        if (!changedAny) t+='<p class=meta>'+T('cmp_none')+'</p>';
+        box.appendChild(el('div',null,t));
+      }}
+    }}
   }}
 
   // ---- Glossary ----
