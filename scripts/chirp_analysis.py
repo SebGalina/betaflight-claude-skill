@@ -583,6 +583,63 @@ def _worst_filtered_db(noise: dict) -> float | None:
     return max((p["db_filt"] for p in peaks), default=None)
 
 
+def _filter_disable_notes(noise: dict, config: dict) -> list[dict]:
+    """Which whole filters could be turned off, judged from the raw noise above their cut-off.
+
+    A lowpass only earns its phase lag if there is noise in its stopband. The second LPF stage
+    (gyro_lpf2 / dterm_lpf2) is the usual redundancy: if the raw spectrum is already at the floor
+    above its cut-off, it removes nothing the first stage + RPM/dyn_notch didn't already remove.
+    """
+    if not config:
+        return []
+    freqs = (noise or {}).get("freqs") or []
+    raw = (noise or {}).get("raw_db") or []
+    if not freqs:
+        return []
+
+    def max_raw_above(fc):
+        vals = [r for f, r in zip(freqs, raw) if f >= fc]
+        return max(vals) if vals else None
+
+    out = []
+    g1 = config.get("gyro_lpf1") or {}
+    g1hi = (g1.get("dyn") or [None, None])[-1] or g1.get("static")
+    g2c = (config.get("gyro_lpf2") or {}).get("static")
+    if g2c:
+        mr = max_raw_above(g2c)
+        if mr is not None and mr <= -20:
+            out.append({
+                "fr": f"Gyro LPF2 (statique {g2c} Hz) : au-dessus de sa coupure le bruit brut plafonne à "
+                      f"{mr:.0f} dB (LPF1 jusqu'à {g1hi} Hz + RPM/dyn_notch font le travail) → il n'enlève quasi "
+                      f"rien. Candidat à désactiver (gyro_lpf2_static_hz = 0) pour retirer son retard de phase.",
+                "en": f"Gyro LPF2 (static {g2c} Hz): above its cut-off the raw noise tops out at {mr:.0f} dB "
+                      f"(LPF1 up to {g1hi} Hz + RPM/dyn_notch do the work) → it removes almost nothing. Candidate "
+                      f"to disable (gyro_lpf2_static_hz = 0) to drop its phase lag."})
+        elif mr is not None:
+            out.append({
+                "fr": f"Gyro LPF2 ({g2c} Hz) : encore du bruit (~{mr:.0f} dB) au-dessus de sa coupure — il sert "
+                      f"toujours, à garder.",
+                "en": f"Gyro LPF2 ({g2c} Hz): still noise (~{mr:.0f} dB) above its cut-off — it's still working, keep it."})
+    d2c = (config.get("dterm_lpf2") or {}).get("static")
+    if d2c:
+        mrd = max_raw_above(150.0)
+        if mrd is not None and mrd <= -15:
+            out.append({
+                "fr": f"D-term LPF2 (statique {d2c} Hz) : le D-term n'est pas mesuré ici, mais le gyro qui "
+                      f"l'alimente est déjà propre au-dessus de 150 Hz (~{mrd:.0f} dB) → ce 2e étage est "
+                      f"probablement désactivable aussi (dterm_lpf2_static_hz = 0) ; à confirmer au ressenti/température.",
+                "en": f"D-term LPF2 (static {d2c} Hz): the D-term isn't measured here, but the gyro feeding it is "
+                      f"already clean above 150 Hz (~{mrd:.0f} dB) → this 2nd stage is likely disable-able too "
+                      f"(dterm_lpf2_static_hz = 0); confirm by feel/motor temps."})
+        else:
+            out.append({
+                "fr": f"D-term LPF2 ({d2c} Hz) : le bruit moteur vers 230 Hz (~{max_raw_above(150.0):.0f} dB brut) "
+                      f"tombe dans la zone que le D amplifie → le filtrage D-term est utile ici, à garder.",
+                "en": f"D-term LPF2 ({d2c} Hz): motor noise near 230 Hz (~{max_raw_above(150.0):.0f} dB raw) lands in "
+                      f"the band the D amplifies → D-term filtering earns its keep here, leave it on."})
+    return out
+
+
 def _noise_suggestions(noise: dict) -> list[dict]:
     """Observations read off the noise PSD peaks, against the -10 dB guide ({fr, en})."""
     if not noise:
@@ -765,6 +822,10 @@ def _parse_header_config(bbl_path: Path) -> dict:
             return None
         return vals[:n] if n else vals
 
+    def i1(key):
+        v = ints(key)
+        return v[0] if v else None
+
     cfg: dict = {"pids": {}}
     for axis, key in (("roll", "rollPID"), ("pitch", "pitchPID"), ("yaw", "yawPID")):
         p = ints(key, 3)
@@ -772,14 +833,14 @@ def _parse_header_config(bbl_path: Path) -> dict:
             cfg["pids"][axis] = p
     cfg["d_max"] = ints("d_max", 3)
     g1 = ints("gyro_lpf1_dyn_hz")
-    cfg["gyro_lpf1"] = {"dyn": g1, "static": ints("gyro_lpf1_static_hz"),
+    cfg["gyro_lpf1"] = {"dyn": g1, "static": i1("gyro_lpf1_static_hz"),
                         "type": _LPF_TYPES.get(h.get("gyro_lpf1_type"), h.get("gyro_lpf1_type"))}
-    cfg["gyro_lpf2"] = {"static": ints("gyro_lpf2_static_hz"),
+    cfg["gyro_lpf2"] = {"static": i1("gyro_lpf2_static_hz"),
                         "type": _LPF_TYPES.get(h.get("gyro_lpf2_type"), h.get("gyro_lpf2_type"))}
     d1 = ints("dterm_lpf1_dyn_hz")
-    cfg["dterm_lpf1"] = {"dyn": d1, "static": ints("dterm_lpf1_static_hz"),
+    cfg["dterm_lpf1"] = {"dyn": d1, "static": i1("dterm_lpf1_static_hz"),
                          "type": _LPF_TYPES.get(h.get("dterm_lpf1_type"), h.get("dterm_lpf1_type"))}
-    cfg["dterm_lpf2"] = {"static": ints("dterm_lpf2_static_hz"),
+    cfg["dterm_lpf2"] = {"static": i1("dterm_lpf2_static_hz"),
                          "type": _LPF_TYPES.get(h.get("dterm_lpf2_type"), h.get("dterm_lpf2_type"))}
     dn_min = (ints("dyn_notch_min_hz") or [None])[0]
     dn_max = (ints("dyn_notch_max_hz") or [None])[0]
@@ -1043,7 +1104,7 @@ def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
         "noise_spectrum": noise,
         "synthesis": _synthesis(results, noise, config, throttle_max),
         "filter_suggestions": _filter_suggestions(throttle_map, config) if config else [],
-        "noise_suggestions": _noise_suggestions(noise),
+        "noise_suggestions": _noise_suggestions(noise) + _filter_disable_notes(noise, config),
         "pid_suggestions": _pid_suggestions(results, config, noise) if config else {},
     }
 
@@ -1575,7 +1636,14 @@ function render() {{
       const H3=180, nc=mkCanvas(box,H3).getContext('2d');
       drawAxes(nc,H3,fmin,fmax,lo,hi,'dB');
       if (CFG.dyn_notch) vband(nc,H3,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
-      if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ vline(nc,H3,CFG.gyro_lpf1.dyn[0],fmin,fmax,'#5a9bd4','gyroLPF'); vline(nc,H3,CFG.gyro_lpf1.dyn[1],fmin,fmax,'#5a9bd4',''); }}
+      // filter transfer functions — show WHERE each gyro LPF attenuates (rolloff curve in dB)
+      const ORD={{PT1:1,PT2:2,PT3:3,BIQUAD:2}};
+      const lpfDb=(f,fc,o)=>-10*o*Math.log10(1+Math.pow(f/fc,2));
+      const drawLpf=(fc,o,col,lab)=>{{ if(!fc)return; nc.strokeStyle=col; nc.lineWidth=1.2; nc.setLineDash([5,3]); nc.beginPath();
+        let st=false; for(let f=fmin;f<=fmax;f*=1.03){{ const y=lerp(Math.max(lpfDb(f,fc,o),lo),lo,hi,H3-22,8), x=logx(f,fmin,fmax); st?nc.lineTo(x,y):nc.moveTo(x,y); st=true; }}
+        nc.stroke(); nc.setLineDash([]); if(lab){{ const xc=logx(fc,fmin,fmax); nc.fillStyle=col; nc.fillText(lab,Math.min(xc,W-60),30); }} }};
+      if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ const o=ORD[CFG.gyro_lpf1.type]||1; drawLpf(CFG.gyro_lpf1.dyn[0],o,'#5a9bd4','LPF1↓'); drawLpf(CFG.gyro_lpf1.dyn[1],o,'#5a9bd4','LPF1↑'); }}
+      if (CFG.gyro_lpf2 && CFG.gyro_lpf2.static) {{ const o=ORD[CFG.gyro_lpf2.type]||1; drawLpf(CFG.gyro_lpf2.static,o,'#b0a0ff','LPF2'); }}
       hline(nc,H3,-10,lo,hi,'#ff8a80','-10 dB');
       const ones=F.map(_=>1);
       if (ns.has_unfilt) plotLine(nc,H3,F,ns.filt_db,ones,fmin,fmax,lo,hi,'#80cbc4',{{lw:1.6}});
@@ -1589,7 +1657,8 @@ function render() {{
       box.appendChild(el('div','legend',
         (ns.has_unfilt?('<span style="color:#4fc3f7">— '+T('leg_raw')+'</span><span style="color:#80cbc4">— '+T('leg_filt')+'</span>'):'<span style="color:#4fc3f7">— gyro</span>')+
         '<span style="color:#ff8a80">-- '+T('leg_ok')+'</span>'+
-        '<span style="color:#5a9bd4">│ '+tip('gyro_lpf','gyro lpf')+'</span>'+
+        '<span style="color:#5a9bd4">-- '+tip('gyro_lpf','gyro LPF1')+'</span>'+
+        '<span style="color:#b0a0ff">-- LPF2</span>'+
         '<span style="color:#ffd479">▮ '+tip('dyn_notch','dyn_notch')+'</span>'));
       box.appendChild(el('div','legend',(ns.has_unfilt?T('noise_cap'):T('noise_cap_nounfilt')).replace('{{psd}}',tip('noise_psd','PSD'))));
     }}
