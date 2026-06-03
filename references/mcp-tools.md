@@ -150,7 +150,7 @@ Current rcmap    : TAER  ✅ No correction needed
 
 ## Rendering analysis curves via a chart MCP server (AntV)
 
-`blackbox.betaflight.com` and PIDtoolbox cannot be driven by MCP. To **display**
+External web tools such as `blackbox.betaflight.com` cannot be driven by MCP. To **display**
 the step-response and noise-spectrum curves inline (e.g. in claude.ai web, where
 the scripts' matplotlib `--plot` cannot open a window), delegate the rendering to
 a generic chart MCP server. Recommended: **AntV `mcp-server-chart`** (free, no API

@@ -90,29 +90,6 @@ python -m scripts.analyze_blackbox log.bbl --session N  # pick one of several co
 
 The `--stats` and `--csv` modes require `numpy` and `pandas`; header parsing and `--json` work with the standard library alone.
 
-## Gyro and motor noise analysis
-
-`scripts/gyro_noise.py` computes the power spectral density (Welch method) of the gyro and motor signals — the equivalent of the noise tab in Blackbox Explorer.
-
-```bash
-# Full noise report (gyro + motors, all axes, up to 1 kHz)
-python -m scripts.gyro_noise log.bbl
-
-# Render frequency plot — filtered (solid) vs unfiltered (dashed) gyro + motor spectrum
-python -m scripts.gyro_noise log.bbl --plot
-
-# Single axis, limit to 500 Hz
-python -m scripts.gyro_noise log.bbl --axis roll --max-freq 500
-
-# Export PSD data for external plotting
-python -m scripts.gyro_noise log.bbl --csv spectra.csv
-
-# JSON output
-python -m scripts.gyro_noise log.bbl --json
-```
-
-`gyroUnfilt` is logged by default in Betaflight (controlled by `blackbox_disable_gyrounfilt`, default OFF). When present, the script shows the filter attenuation in dB at the peak noise frequency. If the field is absent the script falls back to the filtered gyro only and warns the user.
-
 ## Step response analysis
 
 `scripts/step_response.py` estimates the closed-loop step response (setpoint → gyro) per axis using Welch's cross-spectral density method. Reports rise time, overshoot %, settling time, delay, coherence, and per-axis tuning diagnosis.
@@ -137,7 +114,7 @@ python -m scripts.step_response log.bbl --bandpass --active-only --csv curves.cs
 
 ## Noise spectrum / FFT analysis
 
-`scripts/spectral_analysis.py` computes the power spectral density (Welch's method) of the gyro or D-term per axis — PIDToolbox-style — then automatically extracts the frequency peaks and groups them into harmonic series so you know *what* the noise is and *which* filter to reach for.
+`scripts/spectral_analysis.py` computes the power spectral density (Welch's method) of the gyro or D-term per axis, then automatically extracts the frequency peaks and groups them into harmonic series so you know *what* the noise is and *which* filter to reach for.
 
 ```bash
 # Gyro noise spectrum, all axes (peaks + harmonics + diagnosis)
@@ -255,12 +232,12 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   └── wizard.md             Setup wizard flow, tables, and rules
 ├── scripts/                  Python tools
 │   ├── fetch_presets.py      Fetch + filter official presets from betaflight/firmware-presets
-│   ├── gyro_noise.py         Gyro and motor noise spectrum (Welch PSD, equivalent to Blackbox Explorer noise tab)
 │   ├── parse_diff.py         Parser for CLI diff/dump output
 │   ├── validate_config.py    Config sanity checker
 │   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)
 │   ├── blackbox_decoder.py   Pure-Python blackbox frame decoder
 │   ├── blackbox_presenter.py Human-readable scaling + enum decoding
+│   ├── blackbox_signal.py    Shared decode/load/sample-rate/activity helpers for the analysers
 │   ├── step_response.py      Closed-loop step response (Welch cross-spectral method)
 │   ├── spectral_analysis.py  Noise spectrum / FFT peaks + harmonics (gyro / D-term)
 │   ├── chirp_analysis.py     Chirp Bode (gain/phase/coherence) + throttle resonance map
@@ -307,7 +284,6 @@ Once installed, just talk to Claude — no explicit invocation needed:
 python -m scripts.parse_diff evals/sample_diff.txt
 python -m scripts.validate_config evals/sample_diff.txt
 python -m scripts.analyze_blackbox your_log.bbl --stats
-python -m scripts.gyro_noise your_log.bbl --plot
 python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
 python -m scripts.spectral_analysis your_log.bbl
 python -m scripts.chirp_analysis your_log.bbl --html report.html
@@ -317,7 +293,7 @@ python -m scripts.run_evals --ids 1 2 3
 
 ## Limitations
 
-- **No filter response curves.** Theoretical LPF/notch/RPM filter frequency response is not computed. `gyro_noise.py` shows the empirical effect (measured attenuation at peak noise), not the designed curve. For the designed curves use [blackbox.betaflight.com](https://blackbox.betaflight.com) or PIDtoolbox.
+- **No filter response curves.** Theoretical LPF/notch/RPM filter frequency response is not computed. `spectral_analysis.py` (and the `chirp_analysis.py` HTML report) shows the empirical effect (measured noise at peak), not the designed curve. For the designed curves use [blackbox.betaflight.com](https://blackbox.betaflight.com).
 - **Defaults to Betaflight 2025.12 conventions.** Older configs may contain deprecated or renamed parameters; the skill flags them but does not auto-migrate.
 - **No real-time link without the MCP server.** Without `betaflight-mcp`, the skill works on files and descriptions only. With it, Claude can read and write the FC directly (see the MCP section above).
 

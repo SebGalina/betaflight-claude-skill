@@ -3,8 +3,7 @@
 step_response.py -Betaflight closed-loop step response analyser.
 
 Estimates the step response of the PID loop (setpoint → gyro) per axis using
-Welch's averaged cross-spectral density method -the same signal-processing
-approach used by PIDToolbox:
+Welch's averaged cross-spectral density method:
 
     H(f)  = Pxy(f) / Pxx(f)          # transfer function estimate
     h(t)  = IFFT(H)                   # impulse response
@@ -35,59 +34,32 @@ Recommended for identification flights: --bandpass --active-only
 
 import argparse
 import json
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
 
+sys.path.insert(0, str(Path(__file__).parent))
+import blackbox_signal as bbs  # noqa: E402  (shared decode/load/sample-rate helpers)
+
 # ---------------------------------------------------------------------------
 # Column names in the decoded CSV (blackbox_decoder output)
 # ---------------------------------------------------------------------------
-TIME_COL = "time"
+TIME_COL = bbs.TIME_COL
 SETPOINT_COLS = ["setpoint[0]", "setpoint[1]", "setpoint[2]"]  # roll, pitch, yaw
 GYRO_COLS     = ["gyroADC[0]",  "gyroADC[1]",  "gyroADC[2]"]
-THROTTLE_COL  = "rcCommand[3]"
+THROTTLE_COL  = bbs.THROTTLE_COL
 AXES = ["roll", "pitch", "yaw"]
 
 # ---------------------------------------------------------------------------
-# I/O helpers
+# I/O helpers — shared with spectral_analysis.py / chirp_analysis.py
+# (see scripts/blackbox_signal.py; the bbl→DataFrame load goes through
+# bbs.load_dataframe directly in main())
 # ---------------------------------------------------------------------------
-
-def _decode_bbl(bbl_path: Path, session=None) -> Path:
-    """Decode a .bbl/.bfl to a temporary CSV via analyze_blackbox.py."""
-    script = Path(__file__).parent / "analyze_blackbox.py"
-    tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-    tmp.close()
-    cmd = [sys.executable, str(script), str(bbl_path), "--csv", tmp.name]
-    if session is not None:
-        cmd += ["--session", str(session)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.exit(f"analyze_blackbox failed:\n{r.stderr}")
-    return Path(tmp.name)
-
-
-def _load_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, comment="#")
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-
-def _sample_rate(df: pd.DataFrame) -> float:
-    """Estimate loop rate from the time column (microseconds)."""
-    dt_us = float(np.median(np.diff(df[TIME_COL].values[:4000])))
-    return 1_000_000.0 / dt_us
-
-
-def _active_mask(df: pd.DataFrame, throttle_min: int = 1100) -> np.ndarray:
-    """Keep only frames where the craft is actively flying (throttle above idle)."""
-    if THROTTLE_COL in df.columns:
-        return df[THROTTLE_COL].values > throttle_min
-    return np.ones(len(df), dtype=bool)
+_sample_rate = bbs.sample_rate
+_active_mask = bbs.active_mask
 
 
 def _active_only_mask(df: pd.DataFrame, fs: float, threshold_dps_per_s: float = 5000.0) -> np.ndarray:
@@ -449,79 +421,70 @@ def main():
     args = ap.parse_args()
 
     path = Path(args.input)
-    tmp_csv = None
-    if path.suffix.lower() in (".bbl", ".bfl"):
-        tmp_csv = _decode_bbl(path, args.session)
-        df = _load_csv(tmp_csv)
+    df = bbs.load_dataframe(path, args.session)
+
+    fs = _sample_rate(df)
+    axes_filter = [args.axis] if args.axis else None
+    results = analyse(
+        df, fs, axes_filter,
+        bandpass=args.bandpass,
+        active_only=args.active_only,
+        nperseg=args.nperseg,
+    )
+
+    flags = []
+    if args.bandpass:    flags.append("bandpass")
+    if args.active_only: flags.append("active-only")
+    if args.nperseg:     flags.append(f"nperseg={args.nperseg}")
+    output = {
+        "sample_rate_hz": round(fs),
+        "flags": flags,
+        "axes": results,
+    }
+
+    if args.plot:
+        flags_str = f"  [{', '.join(flags)}]" if flags else ""
+        _plot_results(output, title_suffix=f" — {path.name}{flags_str}")
+
+    if args.chart:
+        print(json.dumps(_chart_payload(output, path.name), indent=2))
+    elif args.json:
+        print(json.dumps(output, indent=2))
+    elif args.csv:
+        rows = [
+            {"axis": axis, "time_ms": t, "response": v}
+            for axis, data in results.items()
+            for t, v in data.get("step_response", [])
+        ]
+        if rows:
+            pd.DataFrame(rows).to_csv(args.csv, index=False)
+            print(f"Curves written to {args.csv}", file=sys.stderr)
     else:
-        df = _load_csv(path)
-
-    try:
-        fs = _sample_rate(df)
-        axes_filter = [args.axis] if args.axis else None
-        results = analyse(
-            df, fs, axes_filter,
-            bandpass=args.bandpass,
-            active_only=args.active_only,
-            nperseg=args.nperseg,
-        )
-
-        flags = []
-        if args.bandpass:    flags.append("bandpass")
-        if args.active_only: flags.append("active-only")
-        if args.nperseg:     flags.append(f"nperseg={args.nperseg}")
-        output = {
-            "sample_rate_hz": round(fs),
-            "flags": flags,
-            "axes": results,
-        }
-
-        if args.plot:
-            flags_str = f"  [{', '.join(flags)}]" if flags else ""
-            _plot_results(output, title_suffix=f" — {path.name}{flags_str}")
-
-        if args.chart:
-            print(json.dumps(_chart_payload(output, path.name), indent=2))
-        elif args.json:
-            print(json.dumps(output, indent=2))
-        elif args.csv:
-            rows = [
-                {"axis": axis, "time_ms": t, "response": v}
-                for axis, data in results.items()
-                for t, v in data.get("step_response", [])
-            ]
-            if rows:
-                pd.DataFrame(rows).to_csv(args.csv, index=False)
-                print(f"Curves written to {args.csv}", file=sys.stderr)
-        else:
-            # Human-readable report
-            base_mask = _active_mask(df)
-            used_mask = _active_only_mask(df, fs) if args.active_only else base_mask
-            print(f"Sample rate   : {round(fs):,} Hz")
-            print(f"Active frames : {int(used_mask.sum()):,} / {len(df):,}", end="")
-            if flags:
-                print(f"  [{', '.join(flags)}]", end="")
+        # Human-readable report
+        base_mask = _active_mask(df)
+        used_mask = _active_only_mask(df, fs) if args.active_only else base_mask
+        print(f"Sample rate   : {round(fs):,} Hz")
+        print(f"Active frames : {int(used_mask.sum()):,} / {len(df):,}", end="")
+        if flags:
+            print(f"  [{', '.join(flags)}]", end="")
+        print()
+        print()
+        for axis, data in results.items():
+            rt  = data.get("rise_time_ms")
+            osp = data.get("overshoot_pct", 0)
+            st  = data.get("settling_time_ms")
+            dl  = data.get("delay_ms")
+            coh = data.get("mean_coherence", 0)
+            print(f"-- {axis.upper()} " + "-" * 30)
+            print(f"  Rise time     : {rt} ms"          if rt  else "  Rise time     : n/a")
+            print(f"  Overshoot     : {osp} %")
+            print(f"  Settling time : {st} ms"          if st  else "  Settling time  : n/a")
+            print(f"  Delay         : {dl} ms"          if dl  else "  Delay          : n/a")
+            print(f"  Coherence     : {coh:.2f}  (> 0.7 = reliable, < 0.5 = noisy data)")
             print()
+            for hint in data.get("diagnosis", []):
+                print(f"  > {hint}")
             print()
-            for axis, data in results.items():
-                rt  = data.get("rise_time_ms")
-                osp = data.get("overshoot_pct", 0)
-                st  = data.get("settling_time_ms")
-                dl  = data.get("delay_ms")
-                coh = data.get("mean_coherence", 0)
-                print(f"-- {axis.upper()} " + "-" * 30)
-                print(f"  Rise time     : {rt} ms"          if rt  else "  Rise time     : n/a")
-                print(f"  Overshoot     : {osp} %")
-                print(f"  Settling time : {st} ms"          if st  else "  Settling time  : n/a")
-                print(f"  Delay         : {dl} ms"          if dl  else "  Delay          : n/a")
-                print(f"  Coherence     : {coh:.2f}  (> 0.7 = reliable, < 0.5 = noisy data)")
-                print()
-                for hint in data.get("diagnosis", []):
-                    print(f"  > {hint}")
-                print()
-    finally:
-        if tmp_csv:
-            tmp_csv.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-06-03
+
+### Removed
+- `references/method.md` (1045 lines) — orphaned (referenced nowhere) and in
+  French, against the English-only references rule. Pure dead weight.
+- An unused French design note under `references/` — only cited from a
+  `spectral_analysis.py` comment (never loaded into context), against the
+  English-only references rule; the comment now describes the diagnosis
+  conventions generically.
+- `scripts/gyro_noise.py` — its pre/post-filter gyro PSD is reproduced by the
+  `chirp_analysis.py` HTML report (raw vs filtered, motor-harmonic bands, filter
+  cut-offs) and its peak/harmonic diagnosis overlaps `spectral_analysis.py`,
+  the documented FFT/noise tool. The motor-output PSD was the only unique bit
+  and was not referenced anywhere in the skill workflow.
+
+### Added
+- `scripts/blackbox_signal.py` `decode_dataframe()` — decodes a `.bbl`/`.bfl`
+  to a DataFrame **in-process** via `blackbox_decoder`, with no subprocess, no
+  temp file and no CSV float round-trip. `load_dataframe()` now uses it for
+  binary logs and falls back to the isolated `analyze_blackbox --csv` subprocess
+  only if the in-process decode raises. `spectral_analysis`, `step_response` and
+  `chirp_analysis` load through `load_dataframe`, dropping their temp-file dance.
+- `selftest.py`: a synthetic-signal smoke for `spectral_analysis` +
+  `step_response` (runs without a `.bbl`, when numpy/scipy are present) and an
+  in-process-vs-subprocess decode equivalence guard (runs when a `.bbl` fixture
+  is present).
+
+### Changed
+- Token diet for `SKILL.md` (token-economy guidelines): trimmed the
+  always-loaded `description` from ~132 to ~105 words without losing trigger
+  coverage, and compressed the inline chirp paragraph into a short pointer to
+  `references/chirp-tuning.md` (which already documents the internals).
+- Refactor: extracted the helpers that were copy-pasted across the blackbox
+  analysers (`_decode_bbl`, `_load_csv`, `_sample_rate`, activity mask) into a
+  single shared module `scripts/blackbox_signal.py`. `spectral_analysis`,
+  `step_response` and `chirp_analysis` now delegate to it — one copy to maintain,
+  no behaviour change. The diverging DSP primitives (Welch window sizing, axis
+  segmentation, chart payloads) stay per-script on purpose.
+
 ## [0.3.1] — 2026-06-02
 
 ### Changed
@@ -82,10 +121,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.1.19] — 2026-05-31
 
 ### Added
-- `scripts/spectral_analysis.py` — noise spectrum / FFT analyser (gyro or D-term). Welch PSD per axis, automatic frequency-peak extraction, harmonic-series grouping, and PIDToolbox-style diagnosis (motor harmonics → RPM filter; isolated peak → dynamic notch; broadband floor → low-pass). Reuses the existing decoder (`.bbl`/CSV), with `--signal`, `--axis`, `--session`, `--fmin/--fmax`, `--json`, `--csv`, and a `--plot` PSD + spectrogram figure.
+- `scripts/spectral_analysis.py` — noise spectrum / FFT analyser (gyro or D-term). Welch PSD per axis, automatic frequency-peak extraction, harmonic-series grouping, and source diagnosis (motor harmonics → RPM filter; isolated peak → dynamic notch; broadband floor → low-pass). Reuses the existing decoder (`.bbl`/CSV), with `--signal`, `--axis`, `--session`, `--fmin/--fmax`, `--json`, `--csv`, and a `--plot` PSD + spectrogram figure.
 
 ### Changed
-- SKILL.md and README updated: the blackbox section no longer says "no FFT — use PIDtoolbox"; it now points at `spectral_analysis.py`, and both list the new script.
+- SKILL.md and README updated: the blackbox section no longer defers FFT to an external tool; it now points at `spectral_analysis.py`, and both list the new script.
 
 ## [0.1.18] — 2026-05-26
 

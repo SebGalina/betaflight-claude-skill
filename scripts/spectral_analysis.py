@@ -3,8 +3,8 @@
 spectral_analysis.py — Betaflight noise spectrum / FFT peak analyser.
 
 Computes the power spectral density (Welch's method) of the gyro and/or D-term
-per axis, the same way PIDToolbox does, then automatically extracts the
-frequency peaks and groups them into harmonic series. This tells you *what*
+per axis, then automatically extracts the frequency peaks and groups them into
+harmonic series. This tells you *what*
 your noise is (motor harmonics vs frame resonance vs broadband) so you can pick
 the right cure (RPM filter / dynamic notch / low-pass).
 
@@ -17,8 +17,8 @@ Signal-processing notes
     an isolated narrow peak with no harmonics is usually a frame resonance;
     a raised, featureless floor is broadband (electrical / gyro) noise.
 
-Diagnosis thresholds follow references/pidtoolbox_synthese.md (e.g. keep the
-D-term spectral level low; harmonic families -> RPM filter; isolated peak ->
+Diagnosis thresholds follow established noise-analysis conventions (e.g. keep
+the D-term spectral level low; harmonic families -> RPM filter; isolated peak ->
 dynamic notch; broadband -> low-pass, never a notch).
 
 Requires: numpy, scipy, pandas  (matplotlib only for --plot)
@@ -36,9 +36,7 @@ Usage:
 
 import argparse
 import json
-import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 import numpy as np
@@ -46,11 +44,14 @@ import pandas as pd
 from scipy import signal as sp_signal
 from scipy.integrate import trapezoid
 
+sys.path.insert(0, str(Path(__file__).parent))
+import blackbox_signal as bbs  # noqa: E402  (shared decode/load/sample-rate helpers)
+
 # ---------------------------------------------------------------------------
 # Column names in the decoded CSV (blackbox_decoder output)
 # ---------------------------------------------------------------------------
-TIME_COL = "time"
-THROTTLE_COL = "rcCommand[3]"
+TIME_COL = bbs.TIME_COL
+THROTTLE_COL = bbs.THROTTLE_COL
 AXES = ["roll", "pitch", "yaw"]
 SIGNALS = {
     # logical name -> per-axis column template
@@ -67,43 +68,12 @@ MAX_HARMONIC = 5           # search up to the 5th harmonic
 
 
 # ---------------------------------------------------------------------------
-# I/O helpers (same conventions as step_response.py)
+# I/O helpers — shared with step_response.py / chirp_analysis.py
+# (see scripts/blackbox_signal.py; the bbl→DataFrame load goes through
+# bbs.load_dataframe directly in main())
 # ---------------------------------------------------------------------------
-
-def _decode_bbl(bbl_path: Path, session=None) -> Path:
-    """Decode a .bbl/.bfl to a temporary CSV via analyze_blackbox.py."""
-    script = Path(__file__).parent / "analyze_blackbox.py"
-    tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-    tmp.close()
-    cmd = [sys.executable, str(script), str(bbl_path), "--csv", tmp.name]
-    if session is not None:
-        cmd += ["--session", str(session)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.exit(f"analyze_blackbox failed:\n{r.stderr}")
-    return Path(tmp.name)
-
-
-def _load_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, comment="#")
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-
-def _sample_rate(df: pd.DataFrame) -> float:
-    """Estimate loop/log rate from the time column (microseconds)."""
-    dt_us = float(np.median(np.diff(df[TIME_COL].values[:4000])))
-    return 1_000_000.0 / dt_us
-
-
-def _active_mask(df: pd.DataFrame, throttle_min: int = 1100) -> np.ndarray:
-    """Keep only frames where the craft is actually flying (throttle above idle).
-
-    Noise is throttle-dependent; idle/disarmed samples would dilute the spectrum.
-    """
-    if THROTTLE_COL in df.columns:
-        return df[THROTTLE_COL].values > throttle_min
-    return np.ones(len(df), dtype=bool)
+_sample_rate = bbs.sample_rate
+_active_mask = bbs.active_mask
 
 
 # ---------------------------------------------------------------------------
@@ -197,7 +167,7 @@ def _band_rms(freqs, psd, fmin, fmax) -> float:
 
 
 # ---------------------------------------------------------------------------
-# Diagnosis (follows references/pidtoolbox_synthese.md)
+# Diagnosis (motor harmonics / frame resonance / broadband)
 # ---------------------------------------------------------------------------
 
 def _diagnose(signal_name: str, peaks, series, floor_db, peak_db,
@@ -412,7 +382,7 @@ def main():
                 pass
 
     ap = argparse.ArgumentParser(
-        description="Betaflight noise spectrum / FFT peak & harmonic analyser (PIDToolbox-style)"
+        description="Betaflight noise spectrum / FFT peak & harmonic analyser"
     )
     ap.add_argument("input", help=".bbl/.bfl log or decoded CSV from analyze_blackbox --csv")
     ap.add_argument("--signal", choices=list(SIGNALS), default="gyro",
@@ -435,50 +405,41 @@ def main():
     args = ap.parse_args()
 
     path = Path(args.input)
-    tmp_csv = None
-    if path.suffix.lower() in (".bbl", ".bfl"):
-        tmp_csv = _decode_bbl(path, args.session)
-        df = _load_csv(tmp_csv)
+    df = bbs.load_dataframe(path, args.session)
+
+    fs = _sample_rate(df)
+    axes_filter = [args.axis] if args.axis else None
+    results = analyse(
+        df, fs, args.signal, axes_filter,
+        fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg,
+    )
+    nyq = fs / 2.0
+    output = {
+        "sample_rate_hz": round(fs),
+        "signal": args.signal,
+        "band_hz": [args.fmin, round(min(args.fmax, nyq * 0.98), 1)],
+        "axes": results,
+    }
+
+    if args.plot:
+        _plot_results(df, fs, args.signal, output, args.fmin,
+                      min(args.fmax, nyq * 0.98), title_suffix=f" — {path.name}")
+
+    if args.chart:
+        print(json.dumps(_chart_payload(output, path.name), indent=2))
+    elif args.json:
+        print(json.dumps(output, indent=2))
+    elif args.csv:
+        rows = [
+            {"axis": axis, "freq_hz": f, "level_db": d}
+            for axis, data in results.items()
+            for f, d in data.get("spectrum", [])
+        ]
+        if rows:
+            pd.DataFrame(rows).to_csv(args.csv, index=False)
+            print(f"Spectra written to {args.csv}", file=sys.stderr)
     else:
-        df = _load_csv(path)
-
-    try:
-        fs = _sample_rate(df)
-        axes_filter = [args.axis] if args.axis else None
-        results = analyse(
-            df, fs, args.signal, axes_filter,
-            fmin=args.fmin, fmax=args.fmax, nperseg=args.nperseg,
-        )
-        nyq = fs / 2.0
-        output = {
-            "sample_rate_hz": round(fs),
-            "signal": args.signal,
-            "band_hz": [args.fmin, round(min(args.fmax, nyq * 0.98), 1)],
-            "axes": results,
-        }
-
-        if args.plot:
-            _plot_results(df, fs, args.signal, output, args.fmin,
-                          min(args.fmax, nyq * 0.98), title_suffix=f" — {path.name}")
-
-        if args.chart:
-            print(json.dumps(_chart_payload(output, path.name), indent=2))
-        elif args.json:
-            print(json.dumps(output, indent=2))
-        elif args.csv:
-            rows = [
-                {"axis": axis, "freq_hz": f, "level_db": d}
-                for axis, data in results.items()
-                for f, d in data.get("spectrum", [])
-            ]
-            if rows:
-                pd.DataFrame(rows).to_csv(args.csv, index=False)
-                print(f"Spectra written to {args.csv}", file=sys.stderr)
-        else:
-            _print_human(output)
-    finally:
-        if tmp_csv:
-            tmp_csv.unlink(missing_ok=True)
+        _print_human(output)
 
 
 def _print_human(output: dict) -> None:

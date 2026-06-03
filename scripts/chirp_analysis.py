@@ -47,9 +47,7 @@ Usage:
 
 import argparse
 import json
-import subprocess
 import sys
-import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -57,11 +55,14 @@ import numpy as np
 import pandas as pd
 from scipy import signal as sp_signal
 
+sys.path.insert(0, str(Path(__file__).parent))
+import blackbox_signal as bbs  # noqa: E402  (shared decode/load/sample-rate helpers)
+
 # ---------------------------------------------------------------------------
 # Column names in the decoded CSV (blackbox_decoder output)
 # ---------------------------------------------------------------------------
-TIME_COL = "time"
-THROTTLE_COL = "rcCommand[3]"
+TIME_COL = bbs.TIME_COL
+THROTTLE_COL = bbs.THROTTLE_COL
 AXES = ["roll", "pitch", "yaw"]
 GYRO_COL = "gyroADC[{}]"
 SETPOINT_COL = "setpoint[{}]"
@@ -86,33 +87,11 @@ THROTTLE_IDLE = 1100           # below this -> not flying
 
 
 # ---------------------------------------------------------------------------
-# I/O helpers (same conventions as spectral_analysis.py / step_response.py)
+# I/O helpers — shared with spectral_analysis.py / step_response.py
+# (see scripts/blackbox_signal.py; the bbl→DataFrame load goes through
+# bbs.load_dataframe directly in main())
 # ---------------------------------------------------------------------------
-
-def _decode_bbl(bbl_path: Path, session=None) -> Path:
-    """Decode a .bbl/.bfl to a temporary CSV via analyze_blackbox.py."""
-    script = Path(__file__).parent / "analyze_blackbox.py"
-    tmp = tempfile.NamedTemporaryFile(suffix=".csv", delete=False)
-    tmp.close()
-    cmd = [sys.executable, str(script), str(bbl_path), "--csv", tmp.name]
-    if session is not None:
-        cmd += ["--session", str(session)]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    if r.returncode != 0:
-        sys.exit(f"analyze_blackbox failed:\n{r.stderr}")
-    return Path(tmp.name)
-
-
-def _load_csv(path: Path) -> pd.DataFrame:
-    df = pd.read_csv(path, comment="#")
-    df.columns = [c.strip() for c in df.columns]
-    return df
-
-
-def _sample_rate(df: pd.DataFrame) -> float:
-    """Estimate loop/log rate from the time column (microseconds)."""
-    dt_us = float(np.median(np.diff(df[TIME_COL].values[:4000])))
-    return 1_000_000.0 / dt_us
+_sample_rate = bbs.sample_rate
 
 
 def _auto_nperseg(fs: float) -> int:
@@ -2144,18 +2123,9 @@ def main():
     new_passes = []
     for raw in args.input:
         path = Path(raw)
-        tmp_csv = None
-        try:
-            if path.suffix.lower() in (".bbl", ".bfl"):
-                tmp_csv = _decode_bbl(path, args.session)
-                df = _load_csv(tmp_csv)
-            else:
-                df = _load_csv(path)
-            fs = _sample_rate(df)
-            new_passes.append(_build_pass(path, df, fs, args))
-        finally:
-            if tmp_csv:
-                tmp_csv.unlink(missing_ok=True)
+        df = bbs.load_dataframe(path, args.session)
+        fs = _sample_rate(df)
+        new_passes.append(_build_pass(path, df, fs, args))
 
     # History: accumulate unless disabled. The report shows the full (trimmed) history.
     if args.no_history:

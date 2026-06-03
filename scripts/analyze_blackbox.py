@@ -22,7 +22,7 @@ Usage:
     python analyze_blackbox.py <log> --session 2     # pick a log session
 
 Flags --stats and --csv imply --decode. For full FFT / noise analysis still
-prefer https://blackbox.betaflight.com or PIDtoolbox.
+prefer https://blackbox.betaflight.com.
 """
 
 import argparse
@@ -253,7 +253,7 @@ def _print_human(result: dict) -> None:
 
     print(
         "\nNote: filter/PID red flags above are header-level heuristics. "
-        "For gyro/motor noise spectra run: python -m scripts.gyro_noise <log.bbl> --plot"
+        "For gyro/D-term noise spectra run: python -m scripts.spectral_analysis <log.bbl> --plot"
     )
 
 
