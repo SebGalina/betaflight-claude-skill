@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-04
+
+### Added
+- Chirp report — **per-pass config tooltip is now a diff**: on any pass label
+  (pills, scoreboard, comparison header) each PID/filter field shows `from → to`
+  vs the previous pass, with the changed ones highlighted — what moved, at a glance.
+- Chirp report — a **teaching tooltip** on the throttle × frequency map (a "?"
+  badge): hover shows a synthetic *bad* map (a rising motor harmonic, a fixed
+  frame resonance) drawn with the report's own colour map, to learn to read a
+  real one. No image embedded — synthesised in-browser.
+- Chirp report — the step response now draws the **10 % / 90 % rise-time
+  thresholds**, so the "rise X ms" figure is self-explanatory.
+- Chirp report — the tuning guide opens with a compact horizontal **analysis
+  pipeline** (Blackbox → frequency ID → frequency response → margin/crossover →
+  simulated step → noise & filtering → scoring → recommendations).
+
+### Changed
+- Chirp report — coherence glossary now states the **0.8** reliability gate
+  (matching the plot), was an inconsistent ~0.6.
+- Chirp report — the margin · f(Ms) evolution tile drops the "(solid)/(dashed)"
+  words; each label is underlined with its own line style instead.
+
 ## [0.5.0] — 2026-06-04
 
 ### Added

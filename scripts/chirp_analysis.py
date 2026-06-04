@@ -1598,10 +1598,10 @@ GLOSSARY = {
     "coherence": {
         "fr": "Cohérence (0 à 1) : à quel point la réponse mesurée est réellement causée par "
               "l'excitation chirp, et non par du bruit/vibrations. 1 = mesure fiable. En dessous de "
-              "~0.6 la courbe de gain/phase n'est pas fiable à cette fréquence — on l'affiche en grisé. "
+              "0.8 la courbe de gain/phase n'est pas fiable à cette fréquence — on l'affiche en grisé. "
               "La cohérence chute naturellement en haute fréquence.",
         "en": "Coherence (0 to 1): how much of the measured response is really caused by the chirp "
-              "excitation rather than noise/vibration. 1 = trustworthy. Below ~0.6 the gain/phase curve "
+              "excitation rather than noise/vibration. 1 = trustworthy. Below 0.8 the gain/phase curve "
               "is unreliable at that frequency — shown greyed out. Coherence naturally falls at high "
               "frequency (weaker signal).",
     },
@@ -1745,6 +1745,7 @@ STRINGS = {
         "title": "CHIRP ANALYZER", "subtitle": "analyse de réponse fréquentielle · Betaflight",
         "lang_btn": "EN", "pass_word": "Passe",
         "guide_h": "Guide de tuning",
+        "pipe": "Blackbox | Identification fréquentielle | Réponse en fréquence | Phase margin / crossover | Step response simulée | Analyse bruit & filtrage | Scoring | Recommandations",
         "guide_order": "<b>Ordre recommandé :</b> on règle {filt} AVANT {pid}. Chaque filtre ajoute du retard "
                        "de {phase} qui grignote la {pm} : régler les gains avant d'avoir figé le filtrage donne "
                        "des PID qui ne tiendront plus ensuite. On nettoie donc le bruit et les {res} d'abord, "
@@ -1778,6 +1779,10 @@ STRINGS = {
                       "fréquence quand le gaz augmente</b> = harmonique moteur ; une raie à <b>fréquence fixe</b> "
                       "quel que soit le gaz = résonance de cadre/pale.",
         "tmap_lo": "peu de bruit", "tmap_hi": "beaucoup",
+        "mapex_h": "Exemple — à quoi ressemble une MAUVAISE carte",
+        "mapex_cap": "Une raie qui MONTE en fréquence avec le gaz = harmonique moteur (à traiter par RPM filter / dyn_notch). "
+                     "Une raie VERTICALE à fréquence fixe = résonance de cadre/pale (notch). Une bonne carte : plancher bas "
+                     "et uniforme, sans raie franche.",
         "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
         "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
         "tmap_none": "indisponible (ni rcCommand[3] ni motor loggés). Active le throttle/les moteurs en blackbox.",
@@ -1826,6 +1831,7 @@ STRINGS = {
         "title": "CHIRP ANALYZER", "subtitle": "frequency-response analysis · Betaflight",
         "lang_btn": "FR", "pass_word": "Pass",
         "guide_h": "Tuning guide",
+        "pipe": "Blackbox | Frequency identification | Frequency response | Phase margin / crossover | Simulated step response | Noise & filtering analysis | Scoring | Recommendations",
         "guide_order": "<b>Recommended order:</b> set {filt} BEFORE {pid}. Every filter adds {phase} lag that "
                        "eats into the {pm}: tuning gains before the filtering is frozen gives PIDs that won't "
                        "hold afterwards. So clean up noise and {res} first, then raise the gains.",
@@ -1858,6 +1864,10 @@ STRINGS = {
                       "throttle rises</b> = a motor harmonic; a <b>fixed-frequency</b> line at any throttle = a "
                       "frame/prop resonance.",
         "tmap_lo": "low noise", "tmap_hi": "high",
+        "mapex_h": "Example — what a BAD map looks like",
+        "mapex_cap": "A line that CLIMBS in frequency with throttle = a motor harmonic (handled by the RPM filter / "
+                     "dyn_notch). A FIXED-frequency vertical line = a frame/prop resonance (notch). A good map: a low, "
+                     "uniform floor with no sharp line.",
         "step1_h": "Filtering", "step1_sub": "— set this first",
         "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
         "tmap_none": "unavailable (neither rcCommand[3] nor motors logged). Enable throttle/motors in blackbox.",
@@ -1976,6 +1986,8 @@ def _html_report(report: dict, file_name: str) -> str:
      border-radius:6px; padding:9px 11px; font:12px/1.55 system-ui; box-shadow:0 6px 18px rgba(0,0,0,.55); }}
   /* pass labels carry data-pass; the rich coloured config tooltip (#htip) is shown by JS on hover */
   .passtip {{ cursor:help; }}
+  .maptip {{ cursor:help; display:inline-block; width:15px; height:15px; line-height:15px; text-align:center;
+     border-radius:50%; background:#28425c; color:#cfe3ff; font:bold 10px system-ui; vertical-align:middle; }}
   #htip {{ position:fixed; z-index:60; pointer-events:none; display:none; max-width:420px;
      background:#0b0e13; border:1px solid #3a5a78; border-radius:7px; padding:10px 13px;
      font:12px/1.65 ui-monospace,Consolas,monospace; box-shadow:0 8px 22px rgba(0,0,0,.6); }}
@@ -1992,6 +2004,10 @@ def _html_report(report: dict, file_name: str) -> str:
   .passleg label {{ display:inline-flex; align-items:center; gap:5px; margin:2px 16px 2px 0; cursor:pointer; }}
   .passleg input {{ accent-color:#9ecbff; cursor:pointer; }}
   .howto {{ font-size:12px; color:#aab4c4; margin:4px 0 2px; }}
+  .pipe {{ margin:6px 0 10px; line-height:2; }}
+  .pipe b {{ display:inline-block; background:#13314e; border:1px solid #2f567d; border-radius:10px;
+     padding:1px 9px; font:600 11px system-ui; color:#cfe6ff; white-space:nowrap; }}
+  .pipe .arr {{ color:#5a6b82; margin:0 3px; }}
   .ptip {{ position:fixed; z-index:60; pointer-events:none; display:none; background:#0b0e13; color:#e6eaf2;
      border:1px solid #3a5a78; border-radius:5px; padding:3px 7px; font:11px ui-monospace,Consolas,monospace;
      box-shadow:0 4px 12px rgba(0,0,0,.55); }}
@@ -2197,14 +2213,20 @@ function drawMini(canvas,title,pts,color,opts) {{
   canvas._hpts=pts.map((p,i)=> p.v!=null ? {{x:xpos(i), y:ypos(p.v), t:p.v.toFixed(dec)+unit}} : null).filter(Boolean);
   miniHover(canvas);
 }}
-// Two indicators sharing one tile (independent left/right y-axes): solid = A (left), dashed = B (right),
-// same colour. uA/uB are the per-axis units recalled on each ordinate (e.g. '°' left, 'Hz' right).
-function drawMini2(canvas,title,ptsA,ptsB,colA,colB,uA,uB) {{
+// Two indicators sharing one tile (independent left/right y-axes): A = left, solid; B = right, dashed.
+// Title = the two labels in their own colour, each UNDERLINED with its line style (solid A / dashed B),
+// so no "(plein)/(tireté)" words are needed. uA/uB are the units recalled on each ordinate.
+function drawMini2(canvas,lA,lB,ptsA,ptsB,colA,colB,uA,uB) {{
   uA=uA||''; uB=uB||'';
   const ctx=canvas.getContext('2d'), cw=canvas.width, ch=canvas.height;
   const L=24, Rr=24, Tt=18, Bb=16;
   ctx.clearRect(0,0,cw,ch); ctx.font='10px sans-serif';
-  ctx.fillStyle='#9ecbff'; ctx.fillText(title,4,12);
+  // label A (solid underline) · label B (dashed underline)
+  ctx.fillStyle=colA; ctx.fillText(lA,4,11); const wA=ctx.measureText(lA).width;
+  ctx.strokeStyle=colA; ctx.lineWidth=1.4; ctx.beginPath(); ctx.moveTo(4,14); ctx.lineTo(4+wA,14); ctx.stroke();
+  ctx.fillStyle='#8893a5'; ctx.fillText(' · ',4+wA,11); const wS=ctx.measureText(' · ').width, xB=4+wA+wS;
+  ctx.fillStyle=colB; ctx.fillText(lB,xB,11); const wB=ctx.measureText(lB).width;
+  ctx.strokeStyle=colB; ctx.setLineDash([3,2]); ctx.beginPath(); ctx.moveTo(xB,14); ctx.lineTo(xB+wB,14); ctx.stroke(); ctx.setLineDash([]);
   const ra=miniRange(ptsA), rb=miniRange(ptsB);
   if(!ra && !rb) {{ ctx.fillStyle='#5a6273'; ctx.fillText('—',L,ch/2); return; }}
   const n=ptsA.length;
@@ -2280,22 +2302,53 @@ function citem(lbl) {{
   if (/RPM/i.test(lbl))     return {{c:'#aed581',p:'⟳'}};
   return {{c:'#9ad',p:'·'}};
 }}
-// A pass's config as coloured+pictogram HTML, for the rich hover tooltip on any pass label.
+// A pass's config as coloured+pictogram HTML, for the rich hover tooltip on any pass label. Each
+// field shows from→to (underlined) vs the previous pass, so a glance reveals exactly what moved.
 function cfgHTML(p) {{
-  const c=(p&&p.config)||{{}};
-  const row=(it,txt)=>'<div style="color:'+it.c+'">'+it.p+' '+txt+'</div>';
+  const fields=cfgFields(p.config||{{}});
   let s='<b style="color:#cfe3ff">'+(LANG==='fr'?'Passe ':'Pass ')+p.n+'</b>'
-    +(p.file?' <span style="color:#8893a5">'+p.file+'</span>':'')+'<div style="margin-top:4px">';
-  if (c.pids) s+=row(citem('P/I/D'), 'PID '+Object.entries(c.pids).map(([a,v])=>a+' '+v[0]+'/'+v[1]+'/'+v[2]).join('  '));
-  if (c.d_max) s+=row(citem('D_max'), 'D_max '+c.d_max.join('/'));
-  if (c.gyro_lpf1) s+=row(citem('gyro'), 'gyro LPF1 '+(c.gyro_lpf1.dyn?c.gyro_lpf1.dyn.join('–'):c.gyro_lpf1.static)+' Hz'
-     +(c.gyro_lpf1.type?' ('+c.gyro_lpf1.type+')':'')+(c.gyro_lpf2?' · LPF2 '+c.gyro_lpf2.static:''));
-  if (c.dterm_lpf1) s+=row(citem('D-term'), 'D-term LPF1 '+(c.dterm_lpf1.dyn?c.dterm_lpf1.dyn.join('–'):c.dterm_lpf1.static)+' Hz'
-     +(c.dterm_lpf2?' · LPF2 '+c.dterm_lpf2.static:''));
-  if (c.dyn_notch) s+=row(citem('notch'), 'dyn_notch ×'+c.dyn_notch.count+' Q'+c.dyn_notch.q+' ['+c.dyn_notch.min+'–'+c.dyn_notch.max+' Hz]');
-  if (c.rpm_harmonics) s+=row(citem('RPM'), 'RPM filter ×'+c.rpm_harmonics);
-  if (!c.pids) s+='<div style="color:#8893a5">'+(LANG==='fr'?'(config non lue dans ce log)':'(no config parsed)')+'</div>';
+    +(p.file?' <span style="color:#8893a5">'+p.file+'</span>':'');
+  if (!fields.length) return s+'<div style="color:#8893a5">'+(LANG==='fr'?'(config non lue dans ce log)':'(no config parsed)')+'</div>';
+  const idx=PASSES.indexOf(p);
+  const prev=(idx>0)?Object.fromEntries(cfgFields(PASSES[idx-1].config||{{}})):null;
+  if (prev) s+=' <span style="color:#8893a5">— Δ '+(LANG==='fr'?'vs passe ':'vs pass ')+PASSES[idx-1].n+'</span>';
+  s+='<div style="margin-top:4px">';
+  for (const [lbl,val] of fields) {{
+    const ci=citem(lbl), changed=prev && prev[lbl]!=null && prev[lbl]!==val;
+    const shown=changed ? ('<u style="color:#ffd479">'+prev[lbl]+' → '+val+'</u>') : val;
+    s+='<div style="color:'+ci.c+'">'+ci.p+' '+lbl+' : <span style="color:#e6eaf2">'+shown+'</span></div>';
+  }}
   return s+'</div>';
+}}
+
+// Teaching example for the throttle×freq map tooltip: a synthetic BAD map drawn with the SAME colour
+// formula as the real one — a rising motor harmonic (freq grows with throttle), its 2nd harmonic, and a
+// FIXED-frequency frame resonance, over a slightly raised floor; annotations baked in. Memoised data-URI.
+let _mockuri=null;
+function mockMapURI() {{
+  if (_mockuri) return _mockuri;
+  const NT=9, NF=64, W0=300, H0=130, cv=document.createElement('canvas'); cv.width=W0; cv.height=H0;
+  const ctx=cv.getContext('2d'), ff=i=>20+480*i/(NF-1), g=(x,c,w)=>Math.exp(-0.5*((x-c)/w)**2);
+  const M=[]; let lo=1e9, hi=-1e9;
+  for (let r=0;r<NT;r++) {{ const t=0.15+0.85*r/(NT-1), row=[];
+    for (let i=0;i<NF;i++) {{ const fr=ff(i);
+      let v=-33 + 2*Math.sin(i*1.7+r);              // raised, mildly noisy floor
+      v+=34*g(fr,110+320*t,17) + 18*g(fr,220+640*t,16) + 30*g(fr,230,11);
+      row.push(v); lo=Math.min(lo,v); hi=Math.max(hi,v); }}
+    M.push(row); }}
+  const Lx=26, cw=(W0-Lx)/NF, chh=(H0-24)/NT;
+  for (let r=0;r<NT;r++) for (let i=0;i<NF;i++) {{ const tn=(M[r][i]-lo)/((hi-lo)||1);
+    ctx.fillStyle='rgb('+Math.round(255*Math.min(1,tn*1.6))+','+Math.round(120*Math.max(0,1-Math.abs(tn-0.5)*2))+','+Math.round(255*(1-tn))+')';
+    ctx.fillRect(Lx+i*cw, 6+(NT-1-r)*chh, cw+1, chh+1); }}
+  ctx.fillStyle='#c9d2e0'; ctx.font='8px sans-serif'; ctx.fillText('throttle ↑',1,12); ctx.fillText('freq →',W0-32,H0-2);
+  ctx.fillStyle='#fff'; ctx.font='bold 9px sans-serif';
+  ctx.fillText('↗ moteur', Lx+NF*cw*0.60, 20); ctx.fillText('│ résonance', Lx+2, H0-14);
+  _mockuri=cv.toDataURL('image/png'); return _mockuri;
+}}
+function mapTipHTML() {{
+  return '<b style="color:#cfe3ff">'+T('mapex_h')+'</b>'
+    +'<img src="'+mockMapURI()+'" style="display:block;margin:6px 0;border-radius:4px;width:300px">'
+    +'<div style="color:#c2cad6;max-width:300px;white-space:normal">'+T('mapex_cap')+'</div>';
 }}
 
 // Per-pass show/hide pills, repeated top-right of every axis block. They drive the global HIDDEN
@@ -2330,6 +2383,7 @@ function render() {{
   // ---- Guide ----
   {{
     const g=el('div','axis guide'); let s='<h2>'+T('guide_h')+'</h2>';
+    s+='<div class=pipe>'+T('pipe').split(' | ').map(x=>'<b>'+x+'</b>').join('<span class=arr>→</span>')+'</div>';
     s+='<p>'+T('guide_order')
         .replace('{{filt}}',tip('gyro_lpf','<b>'+T('w_filt')+'</b>'))
         .replace('{{pid}}',tip('pid','<b>'+T('w_pid')+'</b>'))
@@ -2390,8 +2444,7 @@ function render() {{
       {{k:'s', key:'overshoot', t:'overshoot', u:'%', g:d=>sm(d,'overshoot_pct'), r:d=>d.overshoot_range}},
       {{k:'s', key:'rise', t:(LANG==='fr'?'montée':'rise'), u:'ms', g:d=>sm(d,'rise_ms'), r:d=>d.rise_range}},
       {{k:'s', key:'settle', t:(LANG==='fr'?'établiss.':'settle'), u:'ms', g:d=>sm(d,'settle_ms'), r:d=>d.settle_range}},
-      {{k:'d', t:(LANG==='fr'?'marge (plein) · f(Ms) (tireté)':'margin (solid) · f(Ms) (dashed)'),
-        uA:'°', uB:'Hz', gA:d=>d.pm_guaranteed_deg, rA:d=>d.pm_guaranteed_range, gB:d=>d.f_ms_hz, rB:d=>d.f_ms_range}},
+      {{k:'d', uA:'°', uB:'Hz', gA:d=>d.pm_guaranteed_deg, rA:d=>d.pm_guaranteed_range, gB:d=>d.f_ms_hz, rB:d=>d.f_ms_range}},
       {{k:'s', key:'ms', t:'Ms', u:'', g:d=>d.ms, r:d=>d.ms_range, opts:{{ctx_lo:1.0, ctx_hi:2.1, zones:MSZONES}}}},
     ];
     const axesSet=[]; PASSES.forEach(p=>Object.keys(p.axes||{{}}).forEach(a=>{{ if(!axesSet.includes(a)) axesSet.push(a); }}));
@@ -2409,7 +2462,7 @@ function render() {{
         for (const ind of INDIC) {{
           if (ind.k==='d') {{   // dual tile: margin (green, solid) + f(Ms) (purple, dashed) — indicator colours
             const A=ptsFor(axis,ind.gA,ind.rA), B=ptsFor(axis,ind.gB,ind.rB);
-            if (A.some(p=>p.v!=null)||B.some(p=>p.v!=null)) drawMini2(mkMini(grid,mw,mh), ind.t, A, B, IND.margin.c, IND.ms.c, ind.uA, ind.uB);
+            if (A.some(p=>p.v!=null)||B.some(p=>p.v!=null)) drawMini2(mkMini(grid,mw,mh), (LANG==='fr'?'marge':'margin'), 'f(Ms)', A, B, IND.margin.c, IND.ms.c, ind.uA, ind.uB);
           }} else {{
             const col=IND[ind.key].c, pts=ptsFor(axis,ind.g,ind.r);
             const o2=Object.assign({{}}, ind.opts||{{}}, {{unit:ind.u||''}});
@@ -2453,7 +2506,8 @@ function render() {{
     box.appendChild(el('h2',null,'<span class=stepnum>1</span>'+tip('gyro_lpf',T('step1_h'))+' '+T('step1_sub')));
     const tm=PRI.throttle_map;
     if (tm && tm.freqs && tm.freqs.length) {{
-      box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro · '+(tm.source||'?')+')'));
+      box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro · '+(tm.source||'?')+')'
+        +' <span class="maptip" title="">?</span>'));
       const rows=tm.levels_db.length, cols=tm.freqs.length;
       const flat=tm.levels_db.flat().filter(v=>v!==null);
       const lo=Math.min(...flat), hi=Math.max(...flat);
@@ -2655,6 +2709,12 @@ function render() {{
       let st=mkCanvas(box,Hh).getContext('2d');
       drawAxesLin(st,Hh,xmax,0,ymax,'step',0.25);
       hline(st,Hh,1,0,ymax,'#5a6273','1.0');
+      // rise time is measured 10% → 90% of the final value; show those two thresholds (labels left,
+      // away from the lower-right inset) so the "rise X ms" number is self-explanatory.
+      st.font='10px sans-serif';
+      [[0.1,'10%'],[0.9,'90%']].forEach(([v,lb])=>{{ const y=lerp(v,0,ymax,Hh-22,8);
+        st.strokeStyle='#3f4856'; st.setLineDash([2,3]); st.beginPath(); st.moveTo(PAD,y); st.lineTo(W-12,y); st.stroke(); st.setLineDash([]);
+        st.fillStyle='#6b7689'; st.fillText(lb, PAD+3, y-2); }});
       if (d.step.y_lo && !HIDDEN.has(PRIMARY)) plotBandLin(st,Hh,d.step.t_ms,d.step.y_lo,d.step.y_hi,xmax,0,ymax,PCOL);
       for (const o of sser) plotLin(st,Hh,o.p.step.t_ms,o.p.step.y,xmax,0,ymax,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
       stepInset(st,Hh,sser,d,PCOL);   // zoomed incrustation on the rise/overshoot (lower-right)
@@ -2687,13 +2747,18 @@ function render() {{
 }}
 document.getElementById('langbtn').onclick=()=>{{ LANG = (LANG==='fr'?'en':'fr'); render(); }};
 let _rt; window.addEventListener('resize', ()=>{{ clearTimeout(_rt); _rt=setTimeout(render, 150); }});
-// Rich coloured config tooltip on any pass label (.passtip[data-pass]), positioned at the cursor.
+// Cursor-positioned HTML tooltip: pass config on a pass label (.passtip[data-pass]),
+// or the good/bad throttle-map teaching example on the '?' badge (.maptip).
 document.addEventListener('mousemove', e=>{{
-  const ht=document.getElementById('htip'), el=e.target.closest && e.target.closest('.passtip[data-pass]');
-  if (el) {{ ht.innerHTML=cfgHTML(PASSES[+el.dataset.pass]); ht.style.display='block';
-    ht.style.left=Math.min(e.clientX+14, window.innerWidth-ht.offsetWidth-12)+'px';
-    ht.style.top=Math.min(e.clientY+14, window.innerHeight-ht.offsetHeight-12)+'px'; }}
-  else ht.style.display='none';
+  const ht=document.getElementById('htip');
+  const pe=e.target.closest && e.target.closest('.passtip[data-pass]');
+  const me=e.target.closest && e.target.closest('.maptip');
+  if (pe) ht.innerHTML=cfgHTML(PASSES[+pe.dataset.pass]);
+  else if (me) ht.innerHTML=mapTipHTML();
+  else {{ ht.style.display='none'; return; }}
+  ht.style.display='block';
+  ht.style.left=Math.min(e.clientX+14, window.innerWidth-ht.offsetWidth-12)+'px';
+  ht.style.top=Math.min(e.clientY+14, window.innerHeight-ht.offsetHeight-12)+'px';
 }});
 render();
 </script></body></html>
