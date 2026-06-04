@@ -44,6 +44,13 @@ test_*.txt
 *.bfl
 !evals/sample_diff.txt
 
+# Generated chirp artefacts (history is rebuilt each run; reports are per-run output).
+# scripts/full_report.html is the committed live example and is force-added at commit time.
+chirp_history.json
+scripts/test/10/
+scripts/test/todo
+scripts/test/*.html
+
 # Secrets / personal configs
 .env
 *.local

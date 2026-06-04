@@ -226,7 +226,11 @@ def _resolve_input(df: pd.DataFrame, exc: np.ndarray | None, requested: str,
 # ---------------------------------------------------------------------------
 
 def _frf(x: np.ndarray, y: np.ndarray, fs: float, nperseg: int, regularize: float = 1e-6):
-    """Return (freqs, gain_db, phase_deg, coherence) for the transfer x -> y."""
+    """Return (freqs, gain_db, phase_deg, coherence, H) for the transfer x -> y.
+
+    H is the complex closed-loop FRF (the complementary sensitivity T = gyro/setpoint);
+    callers that need the sensitivity S = 1 - T read it from H directly.
+    """
     x = sp_signal.detrend(x.astype(float))
     y = sp_signal.detrend(y.astype(float))
     nperseg = min(nperseg, len(x))
@@ -237,7 +241,7 @@ def _frf(x: np.ndarray, y: np.ndarray, fs: float, nperseg: int, regularize: floa
     H = Pxy / (Pxx + reg)
     gain_db = 20.0 * np.log10(np.abs(H) + 1e-12)
     phase_deg = np.degrees(np.unwrap(np.angle(H)))
-    return f, gain_db, phase_deg, Cxy
+    return f, gain_db, phase_deg, Cxy, H
 
 
 def _step_response(setpoint: np.ndarray, gyro: np.ndarray, fs: float, band_fmax: float = 200.0,
@@ -360,6 +364,32 @@ def _phase_margin(freqs, gain_db, phase_deg, coh, fmin, fmax):
     dfco = abs(resid / dgdf) if abs(dgdf) > 1e-6 else span
     unc = min(90.0, abs(dpdf) * dfco)
     return round(fco, 1), round(margin, 1), round(unc, 0)
+
+
+def _sensitivity_peak(freqs, H, coh, fmin, fmax):
+    """Peak of the sensitivity S(f) = 1 - T(f), where T = H is the measured closed-loop FRF.
+
+    Ms = max|S| is the robustness headline: by Bode's integral |S| exceeds 1 somewhere, so
+    Ms >= 1 always, and Ms bounds the phase margin from below via PM >= 2*arcsin(1/(2*Ms)).
+    The frequency f_Ms where |S| peaks is the loop's most fragile point — near the open-loop
+    crossover / main resonance — and is what actually governs the phase margin (unlike the
+    0 dB crossover of T, which is the closed-loop bandwidth). Restricted to the coherent swept
+    band so incoherent high-frequency garbage can't fake a peak. The curve is lightly smoothed
+    so a single noisy bin doesn't win the argmax.
+
+    Returns (f_ms_hz, ms, pm_guaranteed_deg) or (None, None, None).
+    """
+    band = (freqs >= fmin) & (freqs <= fmax) & (coh >= COHERENCE_GATE)
+    if int(band.sum()) < 6:
+        return None, None, None
+    fb = freqs[band]
+    s = _smooth(np.abs(1.0 - H[band]), min(9, int(band.sum()) | 1))
+    i = int(np.argmax(s))
+    ms = float(s[i])
+    if ms <= 1e-6:
+        return None, None, None
+    pm = float(np.degrees(2.0 * np.arcsin(min(1.0, 1.0 / (2.0 * ms)))))
+    return round(float(fb[i]), 1), round(ms, 2), round(pm, 0)
 
 
 def _diagnose(peaks, phase_margin, fmin, fmax) -> list[dict]:
@@ -553,6 +583,54 @@ def _spectrogram(sig: np.ndarray, fs: float, fmin: float = 5.0, fmax: float | No
         "freqs": [round(float(x), 1) for x in logf],
         "logy": True,
         "levels_db": [[round(float(v), 1) for v in row] for row in db],
+    }
+
+
+def _spectrogram_median(segs, fs: float, fmin: float = 5.0, fmax: float | None = None,
+                        ntime: int = 200, nfreq: int = 140) -> dict:
+    """Median spectrogram across the repeated sweeps of one axis (n >= 2).
+
+    Each sweep is the same construction (monotone exponential 0->fmax sweep), so they align
+    on RELATIVE time. We resample every sweep onto a shared (log-f x relative-time) grid,
+    per-column normalise as in `_spectrogram`, then take the per-cell median dB — a cleaner
+    ridge than any single sweep, with sweep-to-sweep noise averaged down. Same dict shape as
+    `_spectrogram` (+ `n_sweeps`); the time axis is rescaled to the median sweep duration so it
+    still reads in seconds. Returns {} if fewer than two usable sweeps survive."""
+    fmax = fmax or fs / 2.0 * 0.98
+    nperseg = 512
+    tgrid = np.linspace(0.0, 1.0, ntime)
+    logf = None
+    grids, durs = [], []
+    for seg in segs:
+        seg = np.asarray(seg, float)
+        if seg.size < 4096:
+            continue
+        sig = sp_signal.detrend(seg)
+        f, t, Sxx = sp_signal.spectrogram(sig, fs=fs, nperseg=nperseg,
+                                          noverlap=nperseg * 3 // 4, window="hann")
+        sel = (f >= fmin) & (f <= fmax)
+        f, Sxx = f[sel], Sxx[sel]
+        if f.size < 4 or t.size < 4:
+            continue
+        db = 10.0 * np.log10(Sxx + 1e-12)
+        db = db - np.max(db, axis=0, keepdims=True)       # per-column 0 dB = loudest freq
+        if logf is None:                                   # lock the shared freq grid on sweep 0
+            flo = float(max(fmin, f[0]))
+            logf = np.logspace(np.log10(flo), np.log10(float(f[-1])), nfreq)
+        db = np.vstack([np.interp(logf, f, db[:, c]) for c in range(db.shape[1])]).T  # nfreq x ncols
+        trel = (t - t[0]) / (t[-1] - t[0])
+        db = np.vstack([np.interp(tgrid, trel, db[r, :]) for r in range(db.shape[0])])  # nfreq x ntime
+        grids.append(db); durs.append(float(t[-1] - t[0]))
+    if len(grids) < 2:
+        return {}
+    med = np.median(np.stack(grids), axis=0)
+    tsec = tgrid * float(np.median(durs))
+    return {
+        "t_s": [round(float(x), 2) for x in tsec],
+        "freqs": [round(float(x), 1) for x in logf],
+        "logy": True,
+        "levels_db": [[round(float(v), 1) for v in row] for row in med],
+        "n_sweeps": len(grids),
     }
 
 
@@ -771,6 +849,97 @@ def _downsample(freqs, *series, fmin, fmax, max_pts=600):
     return out
 
 
+# ---------------------------------------------------------------------------
+# Multi-sweep repeatability: split an axis into its repeated chirp activations
+# and aggregate the per-sweep FRF/step into median + min/max bands.
+# ---------------------------------------------------------------------------
+
+SWEEP_MIN_GAP_S = 0.5     # idle stretch (debug[0]==0) that separates two chirp activations
+SWEEP_MIN_DUR_S = 2.0     # a run shorter than this is a fragment, not a full sweep
+
+
+def _split_sweeps(mask: np.ndarray, fs: float,
+                  min_gap_s: float = SWEEP_MIN_GAP_S, min_dur_s: float = SWEEP_MIN_DUR_S):
+    """Contiguous runs of `mask` (one per chirp activation), bridging sub-second gaps.
+
+    A multi-sweep log triggers the chirp several times on the same axis; each trigger is a
+    full 0->fmax sweep separated from the next by idle samples (the energy/flag mask drops to
+    False). Splitting the axis mask into runs — short intra-sweep dropouts bridged, the long
+    inter-activation gaps preserved — recovers the individual sweeps for repeatability stats.
+    Returns [(start, end_exclusive), ...], keeping only runs >= min_dur_s.
+    """
+    idx = np.where(np.asarray(mask))[0]
+    if idx.size == 0:
+        return []
+    gap = max(1, int(min_gap_s * fs))
+    splits = np.where(np.diff(idx) > gap)[0]
+    starts = np.concatenate(([idx[0]], idx[splits + 1]))
+    ends = np.concatenate((idx[splits], [idx[-1]]))
+    mindur = int(min_dur_s * fs)
+    return [(int(s), int(e) + 1) for s, e in zip(starts, ends) if e - s >= mindur]
+
+
+def _med_range(vals):
+    """(median, lo, hi) over the non-None values, or (None, None, None) if all None."""
+    a = np.array([v for v in vals if v is not None], float)
+    if a.size == 0:
+        return None, None, None
+    return round(float(np.median(a)), 2), round(float(a.min()), 2), round(float(a.max()), 2)
+
+
+def _curve_band(series):
+    """Element-wise (median, lo, hi) over a list of equal-length arrays."""
+    arr = np.vstack(series)
+    return np.median(arr, axis=0), arr.min(axis=0), arr.max(axis=0)
+
+
+def _aggregate_step(steps: list, band_fields: dict) -> dict:
+    """Median step curve + min/max envelope from per-sweep step responses.
+
+    The per-sweep steps share the same time grid (identical nperseg/fs/horizon/downsample), so
+    they line up; a stray fragment is truncated to the common length. Scalar metrics are the
+    median across sweeps, with the inter-sweep range recorded in `band_fields[...]_range`.
+    Returns {} if fewer than two usable steps (caller then has no band to draw).
+    """
+    steps = [s for s in steps if s and s.get("y")]
+    if len(steps) < 2:
+        return steps[0] if steps else {}
+    n = min(len(s["y"]) for s in steps)
+    t_ms = steps[0]["t_ms"][:n]
+    ys = [np.array(s["y"][:n], float) for s in steps]
+    y_med, y_lo, y_hi = _curve_band(ys)
+    ov, ov_lo, ov_hi = _med_range([s["metrics"].get("overshoot_pct") for s in steps])
+    rise, ri_lo, ri_hi = _med_range([s["metrics"].get("rise_ms") for s in steps])
+    settle, se_lo, se_hi = _med_range([s["metrics"].get("settle_ms") for s in steps])
+    delay, _, _ = _med_range([s["metrics"].get("delay_ms") for s in steps])
+    peak, _, _ = _med_range([s["metrics"].get("peak") for s in steps])
+    band_fields["overshoot_range"] = [ov_lo, ov_hi]
+    band_fields["rise_range"] = [ri_lo, ri_hi]
+    band_fields["settle_range"] = [se_lo, se_hi]
+    return {
+        "t_ms": t_ms,
+        "y": [round(float(v), 3) for v in y_med],
+        "y_lo": [round(float(v), 3) for v in y_lo],
+        "y_hi": [round(float(v), 3) for v in y_hi],
+        "metrics": {"overshoot_pct": ov, "rise_ms": rise, "delay_ms": delay,
+                    "settle_ms": settle, "peak": peak},
+    }
+
+
+def _frf_pack(x, y, sp_vals, fs, nperseg, a_fmin, a_fmax):
+    """One sweep's FRF + robustness scalars + step response, bundled for aggregation."""
+    freqs, gain, phase, coh, H = _frf(x, y, fs, nperseg)
+    fco, margin, m_unc = _phase_margin(freqs, gain, phase, coh, a_fmin, a_fmax)
+    f_ms, ms, pm_ms = _sensitivity_peak(freqs, H, coh, a_fmin, a_fmax)
+    step = {}
+    if sp_vals is not None:
+        sb = min(a_fmax, max(120.0, 6.0 * fco)) if fco else min(a_fmax, 150.0)
+        step = _step_response(sp_vals, y, fs, band_fmax=sb)
+    return {"freqs": freqs, "gain": gain, "phase": phase, "coh": coh, "H": H,
+            "fco": fco, "margin": margin, "m_unc": m_unc,
+            "f_ms": f_ms, "ms": ms, "pm_ms": pm_ms, "step": step}
+
+
 def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT_FMAX,
             nperseg=None, motor_poles=None) -> dict:
     nyq = fs / 2.0
@@ -797,6 +966,7 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
     results: dict = {}
     primary_axis_idx = None
     primary_n = 0
+    sweep_windows: dict = {}   # axis index -> [(start, end_exclusive), ...] for the spectrogram merge
 
     for i, axis in enumerate(AXES):
         if axes_filter and axis not in axes_filter:
@@ -827,21 +997,73 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
 
         y = df.loc[np.asarray(mask), gcol].to_numpy(float)
         a_fmin, a_fmax = _swept_band(df, mask, fmin, fmax, finst)
-
-        freqs, gain_db, phase_deg, coh = _frf(x, y, fs, nperseg)
-        peaks = _gain_peaks(freqs, gain_db, coh, a_fmin, a_fmax)
-        fco, margin, m_unc = _phase_margin(freqs, gain_db, phase_deg, coh, a_fmin, a_fmax)
-
-        # Step response from the calibrated setpoint -> gyro (time-domain companion to the Bode).
-        step = {}
         spcol = SETPOINT_COL.format(i)
-        if spcol in df.columns:
-            # closed-loop bandwidth is a few × the crossover; cap the step band well below the
-            # full swept range so high-frequency noise doesn't fake ringing in the transient.
-            sb = min(a_fmax, max(120.0, 6.0 * fco)) if fco else min(a_fmax, 150.0)
-            step = _step_response(df.loc[np.asarray(mask), spcol].to_numpy(float), y, fs, band_fmax=sb)
 
-        fb, gb, pb, cb = _downsample(freqs, gain_db, phase_deg, coh, fmin=a_fmin, fmax=a_fmax)
+        # Repeatability: if the chirp was triggered several times on this axis, each activation is
+        # an independent full sweep. Compute one FRF/step per sweep and aggregate into a median
+        # curve + min/max band. With a single sweep we keep the exact original single-FRF path.
+        # Split on the chirp-ON mask (debug[0]!=0), not the energy labels: the labeller bleeds ~half
+        # a window past the activation, and those zero-excitation edge samples corrupt the per-sweep
+        # Welch/step (steady-state drifts -> false overshoot). The active mask is the true window.
+        axis_active = (mask & active) if active is not None else mask
+        sweeps = _split_sweeps(axis_active, fs)
+        sweep_windows[i] = sweeps
+        packs = []
+        if len(sweeps) >= 2:
+            for s, e in sweeps:
+                sm = np.zeros(len(df), dtype=bool); sm[s:e] = axis_active[s:e]
+                xs, _ = _resolve_input(df, exc, input_col, i, sm)
+                if xs is None:
+                    continue
+                ys = df.loc[sm, gcol].to_numpy(float)
+                sps = df.loc[sm, spcol].to_numpy(float) if spcol in df.columns else None
+                packs.append(_frf_pack(xs, ys, sps, fs, nperseg, a_fmin, a_fmax))
+            if packs:   # drop any short fragment whose Welch grid doesn't match the others
+                gl = max(len(p["freqs"]) for p in packs)
+                packs = [p for p in packs if len(p["freqs"]) == gl]
+        multi = len(packs) >= 2
+
+        band_fields: dict = {}
+        if multi:
+            freqs = packs[0]["freqs"]
+            gain_db, g_lo, g_hi = _curve_band([p["gain"] for p in packs])
+            phase_deg, p_lo, p_hi = _curve_band([p["phase"] for p in packs])
+            coh, c_lo, c_hi = _curve_band([p["coh"] for p in packs])
+            fco, fco_lo, fco_hi = _med_range([p["fco"] for p in packs])
+            margin, m_lo, m_hi = _med_range([p["margin"] for p in packs])
+            m_unc, _, _ = _med_range([p["m_unc"] for p in packs])
+            f_ms, fms_lo, fms_hi = _med_range([p["f_ms"] for p in packs])
+            ms, ms_lo, ms_hi = _med_range([p["ms"] for p in packs])
+            pm_ms, pmg_lo, pmg_hi = _med_range([p["pm_ms"] for p in packs])
+            fb, gb, pb, cb, glo, ghi, plo, phi, clo, chi = _downsample(
+                freqs, gain_db, phase_deg, coh, g_lo, g_hi, p_lo, p_hi, c_lo, c_hi,
+                fmin=a_fmin, fmax=a_fmax)
+            band_fields = {
+                "n_sweeps": len(packs),
+                "gain_band": [[round(float(v), 1) for v in glo], [round(float(v), 1) for v in ghi]],
+                "phase_band": [[round(float(v), 1) for v in plo], [round(float(v), 1) for v in phi]],
+                "coherence_band": [[round(float(v), 3) for v in clo], [round(float(v), 3) for v in chi]],
+                "crossover_range": [fco_lo, fco_hi],
+                "phase_margin_range": [m_lo, m_hi],
+                "ms_range": [ms_lo, ms_hi],
+                "f_ms_range": [fms_lo, fms_hi],
+                "pm_guaranteed_range": [pmg_lo, pmg_hi],
+            }
+            step = _aggregate_step([p["step"] for p in packs], band_fields)
+        else:
+            freqs, gain_db, phase_deg, coh, H = _frf(x, y, fs, nperseg)
+            fco, margin, m_unc = _phase_margin(freqs, gain_db, phase_deg, coh, a_fmin, a_fmax)
+            f_ms, ms, pm_ms = _sensitivity_peak(freqs, H, coh, a_fmin, a_fmax)
+            # Step response from the calibrated setpoint -> gyro (time-domain companion to the Bode).
+            step = {}
+            if spcol in df.columns:
+                # closed-loop bandwidth is a few × the crossover; cap the step band well below the
+                # full swept range so high-frequency noise doesn't fake ringing in the transient.
+                sb = min(a_fmax, max(120.0, 6.0 * fco)) if fco else min(a_fmax, 150.0)
+                step = _step_response(df.loc[np.asarray(mask), spcol].to_numpy(float), y, fs, band_fmax=sb)
+            fb, gb, pb, cb = _downsample(freqs, gain_db, phase_deg, coh, fmin=a_fmin, fmax=a_fmax)
+
+        peaks = _gain_peaks(freqs, gain_db, coh, a_fmin, a_fmax)
         results[axis] = {
             "input_col": xcol,
             "band_hz": [round(a_fmin, 1), round(a_fmax, 1)],
@@ -854,9 +1076,13 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             "phase_margin_deg": margin,
             "phase_margin_unc_deg": m_unc,
             "crossover_hz": fco,
+            "ms": ms,
+            "f_ms_hz": f_ms,
+            "pm_guaranteed_deg": pm_ms,
             "step": step,
             "diagnosis": _diagnose(peaks, (fco, margin, m_unc), a_fmin, a_fmax),
             "step_diagnosis": _step_diagnosis(step.get("metrics", {})) if step else [],
+            **band_fields,
         }
 
     throttle_map = {}
@@ -879,20 +1105,27 @@ def analyse(df, fs, input_col, axes_filter=None, fmin=DEFAULT_FMIN, fmax=DEFAULT
             if mh:
                 noise["motor"] = mh
 
-    # Spectrogram of the primary axis over its (contiguous) chirp window -> the rising sweep.
+    # Spectrogram of the primary axis over its chirp window -> the rising sweep. With several
+    # sweeps on that axis we median them (cleaner ridge); a single sweep keeps the original path
+    # verbatim, so single-sweep logs render byte-identically.
     spectro = {}
     if primary_axis_idx is not None:
         gcol = GYRO_COL.format(primary_axis_idx)
         act = (labels == primary_axis_idx) if labels is not None else active
         if act is not None and gcol in df.columns:
             idx = np.where(np.asarray(act))[0]
-            if idx.size:
-                seg = df[gcol].to_numpy(float)[int(idx[0]):int(idx[-1]) + 1]
-                # crop to the swept band (+10%) so the diagonal fills the plot instead of empty HF
-                sweptmax = (results[AXES[primary_axis_idx]]["band_hz"][1]) * 1.1
+            sweeps = sweep_windows.get(primary_axis_idx, [])
+            # crop to the swept band (+10%) so the diagonal fills the plot instead of empty HF
+            sweptmax = (results[AXES[primary_axis_idx]]["band_hz"][1]) * 1.1
+            gyro = df[gcol].to_numpy(float)
+            if len(sweeps) >= 2:
+                segs = [gyro[s:e] for s, e in sweeps]
+                spectro = _spectrogram_median(segs, fs, fmax=min(fmax, sweptmax))
+            elif idx.size:
+                seg = gyro[int(idx[0]):int(idx[-1]) + 1]
                 spectro = _spectrogram(seg, fs, fmax=min(fmax, sweptmax))
-                if spectro:
-                    spectro["axis"] = AXES[primary_axis_idx]
+            if spectro:
+                spectro["axis"] = AXES[primary_axis_idx]
 
     return results, throttle_map, noise, spectro
 
@@ -1105,6 +1338,85 @@ def _synthesis(axes: dict, noise: dict, config: dict, throttle_max: float | None
 
 
 # ---------------------------------------------------------------------------
+# Composite tune score: one 0-100 grade per axis (+ overall) so a config can be
+# judged better/worse than the previous pass at a glance. Each sub-metric maps to
+# 0-100 through a physical, monotone scoring ramp, then a weighted average.
+# Rise rewards speed; overshoot and noise-margin penalise its cost -> the blend
+# balances a fast-but-edgy tune against a slow-but-clean one.
+# ---------------------------------------------------------------------------
+
+# weight per sub-score; Ms is light because it overlaps the phase margin (avoid double-count)
+SCORE_WEIGHTS = {"overshoot": 0.25, "rise": 0.25, "margin": 0.20, "noise": 0.20, "ms": 0.10}
+
+
+def _ramp(v, good, bad):
+    """Linear 0..100: 100 at the `good` end, 0 at the `bad` end, clamped. Direction-agnostic
+    (good may be greater or smaller than bad). None in -> None out (term dropped from the blend)."""
+    if v is None or good == bad:
+        return None if v is None else (100.0 if v == good else 0.0)
+    return float(max(0.0, min(1.0, (v - bad) / (good - bad))) * 100.0)
+
+
+def _noise_margin_db(d):
+    """Head-room before the loop gain would reach 0 dB in the HIGH band — the D-term ceiling.
+    Measured well ABOVE the passband (where closed-loop gain sits at ~0 dB by design and must
+    not be mistaken for a noise problem): the worst (highest) gain over freq > max(60, 2.5*f(Ms)).
+    A buried roll-off (~-32 dB) scores well; a resonance climbing back toward 0 dB scores poorly.
+
+    Worst-case by construction (a single bad peak sets it, not the average), and the resolved
+    full-resolution resonances in d["peaks"] are folded in — the downsampled curve alone can
+    smooth a narrow spike away. The peak COUNT is not captured here (scalar); list d["peaks"]
+    separately to reason about multiple resonances."""
+    freq, gain = d.get("freq") or [], d.get("gain_db") or []
+    if not freq or not gain:
+        return None
+    pivot = d.get("f_ms_hz") or d.get("crossover_hz") or 24.0
+    fref = max(60.0, 2.5 * pivot)
+    cand = [gain[i] for i in range(len(freq)) if freq[i] > fref]
+    if not cand:                                # band never reaches the HF region: use its top quarter
+        cand = gain[max(1, len(gain) * 3 // 4):]
+    # fold in full-resolution HF resonances (a narrow spike the downsampled curve missed)
+    cand += [p["gain_db"] for p in (d.get("peaks") or []) if p.get("freq_hz", 0) > fref]
+    return -max(cand) if cand else None
+
+
+def _axis_score(d):
+    """Per-axis composite. Returns {score, subs:{...}} or None if nothing is measurable."""
+    sm = (d.get("step") or {}).get("metrics") or {}
+    subs = {
+        "overshoot": _ramp(sm.get("overshoot_pct"), 8.0, 22.0),   # %: target <=8, ceiling ~15, bad >=22
+        "rise":      _ramp(sm.get("rise_ms"), 15.0, 50.0),         # ms: faster better, floor 15, slow 50
+        "margin":    _ramp(d.get("pm_guaranteed_deg"), 45.0, 20.0),# deg guaranteed: >=45 great, <20 risky
+        "ms":        _ramp(d.get("ms"), 1.3, 2.2),                 # sensitivity peak: 1.3 healthy, >=2.2 bad
+        "noise":     _ramp(_noise_margin_db(d), 32.0, 8.0),        # dB HF head-room: ~32 healthy, <=8 = D ceiling
+    }
+    num = den = 0.0
+    for k, w in SCORE_WEIGHTS.items():
+        if subs[k] is not None:
+            num += w * subs[k]; den += w
+    if den == 0:
+        return None
+    return {"score": round(num / den, 1),
+            "subs": {k: (round(v) if v is not None else None) for k, v in subs.items()}}
+
+
+def _grade(score):
+    """Letter grade tuned so ~75 reads as a solid B (FPV-realistic, not academic)."""
+    if score is None:
+        return "—"
+    return next(g for thr, g in [(85, "A"), (70, "B"), (55, "C"), (40, "D"), (0, "F")] if score >= thr)
+
+
+def _tune_score(results):
+    """Overall = mean of the per-axis scores; carried in the pass so history gives the trend."""
+    per = {ax: s for ax, d in results.items() if d for s in [_axis_score(d)] if s}
+    if not per:
+        return {}
+    overall = round(sum(s["score"] for s in per.values()) / len(per), 1)
+    return {"overall": overall, "grade": _grade(overall), "axes": per}
+
+
+# ---------------------------------------------------------------------------
 # Multi-pass history: each chirp re-fly is appended and overlaid for before/after
 # ---------------------------------------------------------------------------
 
@@ -1133,6 +1445,7 @@ def _build_pass(path: Path, df: pd.DataFrame, fs: float, args) -> dict:
         "throttle_max": throttle_max,
         "config": config,
         "axes": results,
+        "tune_score": _tune_score(results),
         "throttle_map": throttle_map,
         "noise_spectrum": noise,
         "spectrogram": spectro,
@@ -1257,6 +1570,22 @@ GLOSSARY = {
               "0 dB. It is the stability reserve. >45° = healthy and damped; 30-45° = fine; 15-30° = "
               "marginal, starts to bounce; <15° or negative = the loop rings. Lowering P/D or adding "
               "filtering restores margin.",
+    },
+    "sensitivity": {
+        "fr": "Pic de sensibilité Ms : Ms = max|S(f)|, avec S = 1/(1+L) = 1−T la fonction de "
+              "sensibilité (T étant la réponse boucle fermée mesurée par le chirp). C'est LE chiffre "
+              "de robustesse : il borne la marge de phase par PM ≥ 2·arcsin(1/(2·Ms)). Physiquement "
+              "Ms = à quel point la boucle amplifie les perturbations à sa fréquence la plus fragile "
+              "f(Ms) — d'où la raie verticale. Repères : Ms ≲ 1.5 confortable et amorti ; ~2 limite ; "
+              ">2 ça résonne (l'overshoot de la step monte, le propwash s'installe). Ms se baisse en "
+              "redonnant de la marge (moins de P/D, ou plus de filtrage avant les PID).",
+        "en": "Sensitivity peak Ms: Ms = max|S(f)|, where S = 1/(1+L) = 1−T is the sensitivity "
+              "function (T being the closed-loop response the chirp measures). It is THE robustness "
+              "number: it bounds the phase margin via PM ≥ 2·arcsin(1/(2·Ms)). Physically Ms is how "
+              "much the loop amplifies disturbances at its most fragile frequency f(Ms) — hence the "
+              "vertical marker. Rules of thumb: Ms ≲ 1.5 comfortable and damped; ~2 marginal; >2 it "
+              "rings (step overshoot climbs, propwash sets in). Lower Ms by restoring margin (less "
+              "P/D, or more filtering before the PIDs).",
     },
     "crossover": {
         "fr": "Crossover 0 dB : la fréquence où le gain passe sous 0 dB. C'est en gros la bande "
@@ -1413,7 +1742,8 @@ GLOSSARY = {
 
 STRINGS = {
     "fr": {
-        "title": "Chirp — assistant de tuning", "lang_btn": "EN", "pass_word": "Passe",
+        "title": "CHIRP ANALYZER", "subtitle": "analyse de réponse fréquentielle · Betaflight",
+        "lang_btn": "EN", "pass_word": "Passe",
         "guide_h": "Guide de tuning",
         "guide_order": "<b>Ordre recommandé :</b> on règle {filt} AVANT {pid}. Chaque filtre ajoute du retard "
                        "de {phase} qui grignote la {pm} : régler les gains avant d'avoir figé le filtrage donne "
@@ -1431,10 +1761,18 @@ STRINGS = {
         "cfg_init": "Réglages initiaux", "cfg_last": "Réglages — dernière passe", "cfg_sub": "(extraits du log)",
         "synth_h": "Lecture d'ensemble", "synth_intro": "D'après la dernière passe",
         "synth_evo": "Évolution depuis la passe 1",
+        "score_h": "Note de tune", "score_vs": "vs passe précédente", "score_all": "Toutes les passes :",
+        "sc_rise": "montée", "sc_margin": "marge", "sc_noise": "bruit",
+        "score_cap": "Note composite 0–100 (moyenne des axes) : overshoot, montée, marge garantie, Ms et marge "
+                     "au bruit, chacun ramené sur 0–100 par une courbe physique puis moyenné (montée et overshoot "
+                     "pèsent le plus). Sert à dire si cette config est meilleure ou pire que la précédente — le "
+                     "delta compare à la passe d'avant. À lire avec les graphes, pas à la place : une note ne "
+                     "remplace pas le jugement manche en main.",
         "guide_vsag": "⚙️ Pour des passes <b>comparables</b> : active <code>vbat_sag_compensation</code> "
                       "(et/ou vole à niveau de batterie similaire). Sinon l'autorité moteur varie d'un vol à "
                       "l'autre et déplace les courbes et les marges, même sans toucher au tune.",
-        "overlay_hint": "décoche une passe pour masquer ses courbes",
+        "overlay_hint": "pastilles en haut à droite de chaque axe : clique une passe pour masquer/afficher ses courbes",
+        "pill_off": "masquée",
         "tmap_howto": "Comment lire — chaque ligne = une tranche de gaz (ralenti en bas, plein gaz en haut), "
                       "couleur = puissance de bruit du gyro à cette fréquence. Une raie verticale qui <b>monte en "
                       "fréquence quand le gaz augmente</b> = harmonique moteur ; une raie à <b>fréquence fixe</b> "
@@ -1457,24 +1795,36 @@ STRINGS = {
                        "horizontales = résonances qui s'allument quand le sweep les traverse.",
         "overlay": "Courbes superposées :",
         "bode_h": "Réponse en fréquence (Bode)", "step_h": "Réponse indicielle (temporel)",
-        "coh_cap": "{coh} — fiabilité de la mesure par fréquence (grisé si &lt; {gate})",
-        "margin": "marge", "no_xover": "pas de crossover",
+        "coh_cap": "fiabilité de la mesure par fréquence (grisé si &lt; {gate})",
+        "margin": "marge mesurée", "no_xover": "pas de crossover",
+        "pm_gtd": "marge garantie", "bandwidth": "bande passante",
         "step3_h": "Historique & comparaison",
         "step3_single": "Une seule passe pour l'instant. Refais un log chirp après tes modifs : il s'empilera "
                         "ici pour la comparaison avant/après.",
         "step3_changes": "↳ changements vs passe précédente :",
+        "evo_h": "Évolution des indicateurs par axe",
+        "evo_cap": "Une vignette par axe × indicateur : les passes en abscisse, la valeur (unité rappelée "
+                   "sur l'ordonnée) en y. Chaque indicateur a sa couleur + picto, repris dans la note de tune. "
+                   "Survole un point pour lire sa valeur exacte. Le point = médiane ; la "
+                   "moustache = l'étendue min/max inter-sweeps quand la passe a plusieurs chirps (sinon point "
+                   "seul). Un trou dans la ligne = indicateur non mesurable sur cette passe. La vignette "
+                   "« marge · f(Ms) » est la seule à deux courbes : marge garantie à gauche en ° (trait plein), "
+                   "fréquence f(Ms) à droite en Hz (tireté). Sur le Ms, la bande verte (1,3–2) est la zone saine "
+                   "visée, le rouge (>2) la zone nerveuse peu robuste.",
         "cmp_h": "Comparaison des réglages",
         "cmp_none": "Réglages PID + filtres identiques sur toutes les passes — les écarts de courbes "
                     "viennent du vol (batterie, throttle, bruit), pas du tune.",
         "glossary_h": "Glossaire",
         "w_filt": "le filtrage", "w_pid": "les PID", "w_phase": "phase",
         "w_pm": "marge de stabilité", "w_res": "résonances",
-        "leg_gyro": "gyro lpf", "leg_dterm": "dterm lpf", "leg_notch": "plage dyn_notch", "leg_xover": "crossover 0 dB",
+        "leg_gyro": "gyro lpf", "leg_dterm": "dterm lpf", "leg_notch": "plage dyn_notch",
+        "leg_xover": "crossover 0 dB", "leg_fms": "f(Ms) — pic de sensibilité",
         "metrics": "overshoot {ov}% · montée {rise} ms · établi {settle} ms",
         "render_err": "⚠ Rendu interrompu : ",
     },
     "en": {
-        "title": "Chirp — tuning assistant", "lang_btn": "FR", "pass_word": "Pass",
+        "title": "CHIRP ANALYZER", "subtitle": "frequency-response analysis · Betaflight",
+        "lang_btn": "FR", "pass_word": "Pass",
         "guide_h": "Tuning guide",
         "guide_order": "<b>Recommended order:</b> set {filt} BEFORE {pid}. Every filter adds {phase} lag that "
                        "eats into the {pm}: tuning gains before the filtering is frozen gives PIDs that won't "
@@ -1491,10 +1841,18 @@ STRINGS = {
         "cfg_init": "Initial settings", "cfg_last": "Settings — latest pass", "cfg_sub": "(read from the log)",
         "synth_h": "Overview", "synth_intro": "Based on the latest pass",
         "synth_evo": "Change since pass 1",
+        "score_h": "Tune score", "score_vs": "vs previous pass", "score_all": "All passes:",
+        "sc_rise": "rise", "sc_margin": "margin", "sc_noise": "noise",
+        "score_cap": "Composite 0–100 score (mean of the axes): overshoot, rise, guaranteed margin, Ms and noise "
+                     "margin, each mapped to 0–100 by a physical curve then averaged (rise and overshoot weigh "
+                     "most). Tells whether this config is better or worse than the previous one — the delta "
+                     "compares to the pass before. Read it alongside the plots, not instead: a score is no "
+                     "substitute for stick feel.",
         "guide_vsag": "⚙️ For <b>comparable</b> passes: enable <code>vbat_sag_compensation</code> (and/or fly at "
                       "a similar battery level). Otherwise motor authority varies between flights and shifts the "
                       "curves and margins even with no tune change.",
-        "overlay_hint": "untick a pass to hide its curves",
+        "overlay_hint": "pills at the top-right of each axis: click a pass to hide/show its curves",
+        "pill_off": "hidden",
         "tmap_howto": "How to read — each row = a throttle slice (idle at the bottom, full throttle at the top), "
                       "colour = gyro noise power at that frequency. A vertical line that <b>climbs in frequency as "
                       "throttle rises</b> = a motor harmonic; a <b>fixed-frequency</b> line at any throttle = a "
@@ -1517,19 +1875,30 @@ STRINGS = {
                        "bands = resonances lighting up as the sweep crosses them.",
         "overlay": "Overlaid curves:",
         "bode_h": "Frequency response (Bode)", "step_h": "Step response (time domain)",
-        "coh_cap": "{coh} — per-frequency measurement reliability (greyed if &lt; {gate})",
-        "margin": "margin", "no_xover": "no crossover",
+        "coh_cap": "per-frequency measurement reliability (greyed if &lt; {gate})",
+        "margin": "measured margin", "no_xover": "no crossover",
+        "pm_gtd": "guaranteed margin", "bandwidth": "bandwidth",
         "step3_h": "History & comparison",
         "step3_single": "Only one pass so far. Re-fly a chirp log after your changes: it will stack up here for "
                         "before/after comparison.",
         "step3_changes": "↳ changes vs previous pass:",
+        "evo_h": "Per-axis indicator evolution",
+        "evo_cap": "One tile per axis × indicator: passes on the x-axis, value (unit recalled on the "
+                   "ordinate) on y. Each indicator has its own colour + pictogram, reused in the tune score. "
+                   "Hover a point to read its exact value. The dot is the median; the whisker "
+                   "is the inter-sweep min/max range when a pass has several chirps (bare dot otherwise). A gap "
+                   "in the line = indicator not measurable on that pass. The 'margin · f(Ms)' tile is the only "
+                   "two-curve one: guaranteed margin on the left in ° (solid), f(Ms) frequency on the right in "
+                   "Hz (dashed). On Ms, the green band (1.3–2) is the healthy target zone, red (>2) the nervous, "
+                   "low-robustness zone.",
         "cmp_h": "Settings comparison",
         "cmp_none": "Identical PID + filter settings across all passes — curve differences come from the "
                     "flight (battery, throttle, noise), not the tune.",
         "glossary_h": "Glossary",
         "w_filt": "filtering", "w_pid": "the PIDs", "w_phase": "phase",
         "w_pm": "stability margin", "w_res": "resonances",
-        "leg_gyro": "gyro lpf", "leg_dterm": "dterm lpf", "leg_notch": "dyn_notch range", "leg_xover": "0 dB crossover",
+        "leg_gyro": "gyro lpf", "leg_dterm": "dterm lpf", "leg_notch": "dyn_notch range",
+        "leg_xover": "0 dB crossover", "leg_fms": "f(Ms) — sensitivity peak",
         "metrics": "overshoot {ov}% · rise {rise} ms · settle {settle} ms",
         "render_err": "⚠ Render interrupted: ",
     },
@@ -1549,8 +1918,32 @@ def _html_report(report: dict, file_name: str) -> str:
 <style>
   body {{ font: 13px/1.5 system-ui, sans-serif; margin: 20px; background:#11141a; color:#dfe3ea; max-width:1800px; }}
   h1 {{ font-size: 19px; }} h2 {{ font-size: 15px; margin: 22px 0 8px; color:#9ecbff; }}
+  .banner {{ position:relative; border-radius:10px; padding:16px 20px 14px; margin-bottom:18px; overflow:hidden;
+     background:linear-gradient(120deg,#141d2a 0%,#1b2a3e 48%,#21344a 100%); border:1px solid #2c4a68; }}
+  .banner::before {{ content:''; position:absolute; inset:0; pointer-events:none; opacity:.12;
+     background:radial-gradient(circle at 88% 25%, #6fd0ff 0, transparent 45%); }}
+  .banner-main {{ display:flex; align-items:center; gap:14px; }}
+  .banner-icon {{ font-size:30px; line-height:1; color:#7fd0ff; text-shadow:0 0 14px rgba(111,208,255,.5); }}
+  .banner-title {{ font-size:25px; font-weight:800; letter-spacing:2.5px; color:#eaf2fb; }}
+  .banner-sub {{ font-size:12.5px; color:#9bb4cc; margin-top:1px; }}
+  .banner-tags {{ margin-top:11px; }}
+  .chip {{ display:inline-block; font:600 11px system-ui; letter-spacing:.4px; color:#cfe6ff; margin-right:6px;
+     background:#13314e; border:1px solid #2f567d; border-radius:11px; padding:2px 10px; }}
+  .banner-file {{ position:absolute; right:18px; bottom:13px; color:#8aa0b8; font-size:12px; }}
   h3 {{ font-size: 13px; color:#8893a5; margin:14px 0 4px; text-transform:uppercase; letter-spacing:.5px; }}
-  .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px 14px; margin-bottom:18px; background:#171b22; }}
+  .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px 14px; margin-bottom:18px; background:#171b22; position:relative; }}
+  .passpills {{ position:absolute; top:11px; right:13px; display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end; max-width:58%; }}
+  .pillbtn {{ font:600 11px system-ui; background:#0d1016; border:1.5px solid; border-radius:11px; padding:1px 9px; cursor:pointer; }}
+  .pillbtn.off {{ background:transparent; border-style:dashed; text-decoration:line-through; }}
+  summary.collh {{ list-style:none; cursor:pointer; font-size:13px; color:#8893a5; text-transform:uppercase;
+     letter-spacing:.5px; font-weight:600; margin:14px 0 4px; }}
+  summary.collh::-webkit-details-marker {{ display:none; }}
+  summary.collh::before {{ content:'▸ '; color:#8893a5; }}
+  details[open] > summary.collh::before {{ content:'▾ '; }}
+  summary.collh2 {{ list-style:none; cursor:pointer; font-size:15px; font-weight:600; color:#9ecbff; margin:0 0 4px; }}
+  summary.collh2::-webkit-details-marker {{ display:none; }}
+  summary.collh2::before {{ content:'▸ '; }}
+  details[open] > summary.collh2::before {{ content:'▾ '; }}
   .step {{ border-left:3px solid #4fc3f7; }}
   .step.pid {{ border-left-color:#ffd479; }}
   .step.cmp {{ border-left-color:#80cbc4; }}
@@ -1566,12 +1959,26 @@ def _html_report(report: dict, file_name: str) -> str:
   .legend span {{ margin-right:14px; white-space:nowrap; }}
   .guide {{ background:#141c26; border:1px solid #28425c; }}
   .guide b {{ color:#9ecbff; }}
+  .score {{ background:#141c26; border:1px solid #28425c; }}
+  .scoreband {{ display:flex; align-items:baseline; gap:14px; flex-wrap:wrap; margin:2px 0 8px; }}
+  .scorebig {{ font-size:40px; font-weight:700; color:#e6eaf2; line-height:1; }}
+  .scoremax {{ font-size:16px; font-weight:400; color:#8893a5; }}
+  .scoregrade {{ font-size:26px; font-weight:700; color:#9ecbff; }}
+  .scoredelta {{ font-size:14px; font-weight:600; }}
+  table.scoretab {{ border-collapse:collapse; font-size:12px; margin:4px 0; }}
+  table.scoretab td {{ padding:2px 10px 2px 0; color:#c2cad6; vertical-align:top; }}
+  .scoreall {{ margin:2px 0 4px; font-size:12.5px; }} .scoreall span {{ font-weight:600; }}
   .stepnum {{ display:inline-block; min-width:20px; height:20px; line-height:20px; text-align:center;
              border-radius:50%; background:#28425c; color:#cfe3ff; font-weight:600; margin-right:6px; }}
   .term {{ border-bottom:1px dotted #6b7689; cursor:help; position:relative; }}
   .term:hover::after {{ content:attr(data-tip); position:absolute; left:0; top:1.5em; z-index:20;
      width:340px; white-space:normal; background:#0b0e13; color:#e6eaf2; border:1px solid #3a4150;
      border-radius:6px; padding:9px 11px; font:12px/1.55 system-ui; box-shadow:0 6px 18px rgba(0,0,0,.55); }}
+  /* pass labels carry data-pass; the rich coloured config tooltip (#htip) is shown by JS on hover */
+  .passtip {{ cursor:help; }}
+  #htip {{ position:fixed; z-index:60; pointer-events:none; display:none; max-width:420px;
+     background:#0b0e13; border:1px solid #3a5a78; border-radius:7px; padding:10px 13px;
+     font:12px/1.65 ui-monospace,Consolas,monospace; box-shadow:0 8px 22px rgba(0,0,0,.6); }}
   .glos dt {{ color:#9ecbff; font-weight:600; margin-top:8px; }}
   .glos dd {{ margin:2px 0 0; color:#c2cad6; }}
   .swatch {{ display:inline-block; width:11px; height:11px; border-radius:2px; margin-right:5px; vertical-align:middle; }}
@@ -1585,6 +1992,9 @@ def _html_report(report: dict, file_name: str) -> str:
   .passleg label {{ display:inline-flex; align-items:center; gap:5px; margin:2px 16px 2px 0; cursor:pointer; }}
   .passleg input {{ accent-color:#9ecbff; cursor:pointer; }}
   .howto {{ font-size:12px; color:#aab4c4; margin:4px 0 2px; }}
+  .ptip {{ position:fixed; z-index:60; pointer-events:none; display:none; background:#0b0e13; color:#e6eaf2;
+     border:1px solid #3a5a78; border-radius:5px; padding:3px 7px; font:11px ui-monospace,Consolas,monospace;
+     box-shadow:0 4px 12px rgba(0,0,0,.55); }}
   .scalebar {{ display:inline-block; height:10px; width:120px; vertical-align:middle; margin:0 6px;
      border-radius:2px; background:linear-gradient(90deg, rgb(0,120,255), rgb(150,90,170), rgb(255,40,30)); }}
   .langbtn {{ position:fixed; top:16px; right:16px; z-index:30; background:#28425c; color:#cfe3ff;
@@ -1593,8 +2003,10 @@ def _html_report(report: dict, file_name: str) -> str:
   .twocol > div {{ flex:1 1 380px; }}
 </style></head><body>
 <button id="langbtn" class="langbtn"></button>
-<h1 id="h1"></h1>
+<div id="hdr" class="banner"></div>
 <div id="root"></div>
+<div id="ptip" class="ptip"></div>
+<div id="htip"></div>
 <script>
 const FILE = {json.dumps(file_name)};
 const R = {payload};
@@ -1644,9 +2056,12 @@ function drawAxes(ctx,h,fmin,fmax,ymin,ymax,ylabel) {{
     ctx.fillStyle='#8893a5'; ctx.fillText(f>=1000?(f/1000)+'k':f, x-6, h-8); }}
   ctx.fillStyle='#9ecbff'; ctx.fillText(ylabel, PAD, 7);
 }}
-function drawAxesLin(ctx,h,xmax,ymin,ymax,ylabel) {{
+function drawAxesLin(ctx,h,xmax,ymin,ymax,ylabel,ystep) {{
   ctx.clearRect(0,0,W,h); ctx.strokeStyle='#2a2f3a'; ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif'; ctx.lineWidth=1;
-  for (let k=0;k<=4;k++) {{ const yv=ymin+(ymax-ymin)*k/4, y=lerp(yv,ymin,ymax,h-22,8);
+  if (ystep) {{ for (let yv=ymin; yv<=ymax+1e-9; yv+=ystep) {{ const y=lerp(yv,ymin,ymax,h-22,8);  // fixed 0.25 grid so 1.0 is always a line
+      ctx.strokeStyle='#2a2f3a'; ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke();
+      ctx.fillStyle='#8893a5'; ctx.fillText(yv.toFixed(2), 4, y+3); }} }}
+  else for (let k=0;k<=4;k++) {{ const yv=ymin+(ymax-ymin)*k/4, y=lerp(yv,ymin,ymax,h-22,8);
     ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke(); ctx.fillText(yv.toFixed(2), 4, y+3); }}
   for (let k=0;k<=5;k++) {{ const xv=xmax*k/5, x=lerp(xv,0,xmax,PAD,W-12);
     ctx.strokeStyle='#20242e'; ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke();
@@ -1674,6 +2089,140 @@ function plotLin(ctx,h,X,Y,xmax,ymin,ymax,color,opts) {{
     i?ctx.lineTo(px,py):ctx.moveTo(px,py); }}
   ctx.stroke(); ctx.globalAlpha=1;
 }}
+// Inter-sweep variability band: shaded min/max envelope (lo..hi) on a log-frequency x-axis.
+function plotBand(ctx,h,F,lo,hi,fmin,fmax,ymin,ymax,color) {{
+  ctx.beginPath();
+  for (let i=0;i<F.length;i++) {{ const x=logx(F[i],fmin,fmax),y=lerp(hi[i],ymin,ymax,h-22,8); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }}
+  for (let i=F.length-1;i>=0;i--) {{ const x=logx(F[i],fmin,fmax),y=lerp(lo[i],ymin,ymax,h-22,8); ctx.lineTo(x,y); }}
+  ctx.closePath(); ctx.fillStyle=color; ctx.globalAlpha=0.22; ctx.fill(); ctx.globalAlpha=1;
+}}
+// Same, on the linear time x-axis of the step response.
+function plotBandLin(ctx,h,X,lo,hi,xmax,ymin,ymax,color) {{
+  ctx.beginPath();
+  for (let i=0;i<X.length;i++) {{ const x=lerp(X[i],0,xmax,PAD,W-12),y=lerp(hi[i],ymin,ymax,h-22,8); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }}
+  for (let i=X.length-1;i>=0;i--) {{ const x=lerp(X[i],0,xmax,PAD,W-12),y=lerp(lo[i],ymin,ymax,h-22,8); ctx.lineTo(x,y); }}
+  ctx.closePath(); ctx.fillStyle=color; ctx.globalAlpha=0.22; ctx.fill(); ctx.globalAlpha=1;
+}}
+// Zoomed inset (incrustation) in the lower-right of the step canvas: the first transient — x from 0 to
+// when the curve comes back to 1 (~20-25 ms), y windowed around 1 (≈0.75–1.25, widened to the data) so
+// the overshoot/return shape is legible without cramming the whole settle into the main plot.
+function stepInset(ctx,h,sser,d,pcol) {{
+  const recross=(t,y)=>{{ let pk=0; for(let i=1;i<y.length;i++) if(y[i]>y[pk]) pk=i;
+    if (y[pk]>1.0) {{ for(let i=pk;i<y.length;i++) if(y[i]<=1.0) return t[i]; }}
+    for(let i=0;i<y.length;i++) if(y[i]>=0.98) return t[i]; return t[t.length-1]; }};
+  const prim=sser.find(o=>o.primary)||sser[sser.length-1];   // window the inset on the reference pass
+  let xz=recross(prim.p.step.t_ms,prim.p.step.y)*1.3||25;
+  // y-window around 1: start tracking min/max only once the curve nears the target (>=0.7), so the
+  // rise from 0 doesn't drag the floor down — we want the overshoot/return detail, not the whole rise.
+  let lo=0.75, hi=1.25;
+  sser.forEach(o=>{{ const t=o.p.step.t_ms,y=o.p.step.y; let on=false;
+    for(let i=0;i<t.length&&t[i]<=xz;i++){{ if(y[i]>=0.7) on=true; if(on){{ lo=Math.min(lo,y[i]); hi=Math.max(hi,y[i]); }} }} }});
+  if (d.step.y_hi) for(let i=0;i<d.step.t_ms.length&&d.step.t_ms[i]<=xz;i++) hi=Math.max(hi,d.step.y_hi[i]);
+  lo=Math.floor(lo/0.05)*0.05; hi=Math.ceil(hi/0.05)*0.05;
+  const iw=(W-PAD-12)*0.40, ih=(h-30)*0.52, x0=W-12-iw-6, y0=h-22-ih-8;
+  const xp=t=>x0+(t/xz)*iw, yp=v=>y0+ih-(v-lo)/(hi-lo)*ih;
+  ctx.fillStyle='rgba(13,16,22,0.92)'; ctx.strokeStyle='#3a4150'; ctx.lineWidth=1;
+  ctx.fillRect(x0,y0,iw,ih); ctx.strokeRect(x0,y0,iw,ih);
+  ctx.save(); ctx.beginPath(); ctx.rect(x0,y0,iw,ih); ctx.clip();
+  ctx.strokeStyle='#5a6273'; ctx.setLineDash([3,2]); ctx.beginPath(); ctx.moveTo(x0,yp(1)); ctx.lineTo(x0+iw,yp(1)); ctx.stroke(); ctx.setLineDash([]);
+  if (d.step.y_lo && !HIDDEN.has(PRIMARY)) {{ ctx.beginPath();
+    for(let i=0;i<d.step.t_ms.length&&d.step.t_ms[i]<=xz;i++){{ const x=xp(d.step.t_ms[i]),y=yp(d.step.y_hi[i]); i?ctx.lineTo(x,y):ctx.moveTo(x,y); }}
+    for(let i=d.step.t_ms.length-1;i>=0;i--){{ if(d.step.t_ms[i]>xz)continue; ctx.lineTo(xp(d.step.t_ms[i]),yp(d.step.y_lo[i])); }}
+    ctx.closePath(); ctx.fillStyle=pcol; ctx.globalAlpha=0.22; ctx.fill(); ctx.globalAlpha=1; }}
+  for (const o of sser) {{ ctx.globalAlpha=o.primary?1:0.5; ctx.strokeStyle=PAL[o.i%PAL.length]; ctx.lineWidth=o.primary?2:1.4;
+    const t=o.p.step.t_ms,y=o.p.step.y; ctx.beginPath(); let started=false;
+    for(let i=0;i<t.length&&t[i]<=xz;i++){{ const x=xp(t[i]),yy=yp(y[i]); started?ctx.lineTo(x,yy):ctx.moveTo(x,yy); started=true; }}
+    ctx.stroke(); }}
+  ctx.globalAlpha=1; ctx.restore();
+  ctx.fillStyle='#9ecbff'; ctx.font='9px sans-serif'; ctx.fillText('zoom 0–'+xz.toFixed(0)+' ms', x0+4, y0+10);
+  ctx.fillStyle='#8893a5'; ctx.fillText(hi.toFixed(2), x0+iw-26, y0+10); ctx.fillText(lo.toFixed(2), x0+iw-26, y0+ih-4);
+}}
+// Small fixed-size canvas for the per-axis evolution sparkline grid (cadre 3).
+function mkMini(parent,w,h) {{ const c=document.createElement('canvas'); c.width=w; c.height=h;
+  c.style.margin='2px 8px 6px 0'; c.style.display='inline-block'; parent.appendChild(c); return c; }}
+// Hover a plotted point (stored in canvas._hpts as {{x,y,t}}) -> show its value in the shared #ptip.
+function miniHover(canvas) {{
+  canvas.onmousemove=(e)=>{{
+    const r=canvas.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top, tip=document.getElementById('ptip');
+    let best=null, bd=1e9;
+    for (const pt of (canvas._hpts||[])) {{ const dd=(pt.x-mx)*(pt.x-mx)+(pt.y-my)*(pt.y-my); if (dd<bd) {{ bd=dd; best=pt; }} }}
+    if (best && bd<169) {{ tip.textContent=best.t; tip.style.display='block'; tip.style.left=(e.clientX+12)+'px'; tip.style.top=(e.clientY+12)+'px'; }}
+    else tip.style.display='none';
+  }};
+  canvas.onmouseleave=()=>{{ document.getElementById('ptip').style.display='none'; }};
+}}
+// One indicator's evolution across passes: median dot + min/max whisker (when a pass has it),
+// a bare dot otherwise (single-sweep pass). Null medians (e.g. no crossover) break the line.
+// opts.zones = [{{lo,hi,fill}}] horizontal reference bands; opts.ctx_lo/ctx_hi force the y-range
+// to include a context value (so a reference band stays visible even when the data is far from it).
+function miniRange(pts,opts) {{
+  opts=opts||{{}}; let vals=[]; pts.forEach(p=>{{ if(p.v!=null)vals.push(p.v); if(p.lo!=null)vals.push(p.lo); if(p.hi!=null)vals.push(p.hi); }});
+  if(opts.ctx_lo!=null)vals.push(opts.ctx_lo); if(opts.ctx_hi!=null)vals.push(opts.ctx_hi);
+  if(!vals.length) return null;
+  let ymin=Math.min(...vals), ymax=Math.max(...vals);
+  if(ymax-ymin<1e-6) {{ ymax+=1; ymin-=1; }}
+  const pad=(ymax-ymin)*0.14; return [ymin-pad, ymax+pad];
+}}
+function miniSeries(ctx,pts,xpos,ypos,color,dash) {{
+  ctx.setLineDash(dash||[]); ctx.strokeStyle=color; ctx.globalAlpha=0.5; ctx.lineWidth=1;
+  ctx.beginPath(); let started=false;
+  pts.forEach((p,i)=>{{ if(p.v==null){{started=false;return;}} const x=xpos(i),y=ypos(p.v); started?ctx.lineTo(x,y):ctx.moveTo(x,y); started=true; }});
+  ctx.stroke(); ctx.globalAlpha=1; ctx.setLineDash([]);
+  pts.forEach((p,i)=>{{ const x=xpos(i);
+    if(p.lo!=null&&p.hi!=null&&p.hi-p.lo>1e-9) {{ const y0=ypos(p.lo),y1=ypos(p.hi);
+      ctx.strokeStyle=color; ctx.lineWidth=1.4; ctx.beginPath(); ctx.moveTo(x,y0); ctx.lineTo(x,y1);
+      ctx.moveTo(x-3,y0); ctx.lineTo(x+3,y0); ctx.moveTo(x-3,y1); ctx.lineTo(x+3,y1); ctx.stroke(); }}
+    if(p.v!=null) {{ ctx.fillStyle=color; ctx.beginPath(); ctx.arc(x,ypos(p.v),2.6,0,7); ctx.fill(); }} }});
+}}
+function drawMini(canvas,title,pts,color,opts) {{
+  opts=opts||{{}};
+  const ctx=canvas.getContext('2d'), cw=canvas.width, ch=canvas.height;
+  const L=34, Rr=10, Tt=18, Bb=16, unit=opts.unit||'';
+  ctx.clearRect(0,0,cw,ch); ctx.font='10px sans-serif';
+  ctx.fillStyle=color; ctx.fillText(title,4,12);   // title in the indicator colour (shared identity)
+  const rg=miniRange(pts,opts);
+  if(!rg) {{ ctx.fillStyle='#5a6273'; ctx.fillText('—',L,ch/2); return; }}
+  const [ymin,ymax]=rg, n=pts.length;
+  const xpos=i=> n>1 ? L+(cw-L-Rr)*i/(n-1) : (L+cw-Rr)/2;
+  const ypos=v=> (ch-Bb)-(v-ymin)/(ymax-ymin)*(ch-Bb-Tt);
+  // reference zones (e.g. Ms healthy band) behind everything, clipped to the visible range
+  for (const z of (opts.zones||[])) {{ const y1=ypos(Math.min(z.hi,ymax)), y0=ypos(Math.max(z.lo,ymin));
+    if(y0>y1){{ ctx.fillStyle=z.fill; ctx.fillRect(L,y1,cw-Rr-L,y0-y1); }} }}
+  ctx.strokeStyle='#2a2f3a'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(L,Tt); ctx.lineTo(L,ch-Bb); ctx.lineTo(cw-Rr,ch-Bb); ctx.stroke();
+  ctx.fillStyle='#8893a5'; const dec=(ymax-ymin>=10)?0:1;
+  ctx.fillText(ymax.toFixed(dec)+unit,2,Tt+7); ctx.fillText(ymin.toFixed(dec)+unit,2,ch-Bb+2);  // unit recalled on the ordinate
+  miniSeries(ctx,pts,xpos,ypos,color,opts.dash);
+  ctx.fillStyle='#8893a5'; pts.forEach((p,i)=>ctx.fillText(p.n, xpos(i)-3, ch-4));
+  canvas._hpts=pts.map((p,i)=> p.v!=null ? {{x:xpos(i), y:ypos(p.v), t:p.v.toFixed(dec)+unit}} : null).filter(Boolean);
+  miniHover(canvas);
+}}
+// Two indicators sharing one tile (independent left/right y-axes): solid = A (left), dashed = B (right),
+// same colour. uA/uB are the per-axis units recalled on each ordinate (e.g. '°' left, 'Hz' right).
+function drawMini2(canvas,title,ptsA,ptsB,colA,colB,uA,uB) {{
+  uA=uA||''; uB=uB||'';
+  const ctx=canvas.getContext('2d'), cw=canvas.width, ch=canvas.height;
+  const L=24, Rr=24, Tt=18, Bb=16;
+  ctx.clearRect(0,0,cw,ch); ctx.font='10px sans-serif';
+  ctx.fillStyle='#9ecbff'; ctx.fillText(title,4,12);
+  const ra=miniRange(ptsA), rb=miniRange(ptsB);
+  if(!ra && !rb) {{ ctx.fillStyle='#5a6273'; ctx.fillText('—',L,ch/2); return; }}
+  const n=ptsA.length;
+  const xpos=i=> n>1 ? L+(cw-L-Rr)*i/(n-1) : (L+cw-Rr)/2;
+  ctx.strokeStyle='#2a2f3a'; ctx.lineWidth=1;
+  ctx.beginPath(); ctx.moveTo(L,Tt); ctx.lineTo(L,ch-Bb); ctx.lineTo(cw-Rr,ch-Bb); ctx.stroke();
+  const hp=[];
+  if(ra) {{ const [aMin,aMax]=ra, yA=v=>(ch-Bb)-(v-aMin)/(aMax-aMin)*(ch-Bb-Tt);
+    ctx.fillStyle='#8893a5'; ctx.fillText(aMax.toFixed(0)+uA,0,Tt+7); ctx.fillText(aMin.toFixed(0)+uA,0,ch-Bb+2);
+    miniSeries(ctx,ptsA,xpos,yA,colA);
+    ptsA.forEach((p,i)=>{{ if(p.v!=null) hp.push({{x:xpos(i), y:yA(p.v), t:p.v.toFixed(0)+uA}}); }}); }}
+  if(rb) {{ const [bMin,bMax]=rb, yB=v=>(ch-Bb)-(v-bMin)/(bMax-bMin)*(ch-Bb-Tt);
+    ctx.fillStyle='#8893a5'; ctx.fillText(bMax.toFixed(0)+uB,cw-Rr+2,Tt+7); ctx.fillText(bMin.toFixed(0)+uB,cw-Rr+2,ch-Bb+2);
+    miniSeries(ctx,ptsB,xpos,yB,colB,[3,2]);
+    ptsB.forEach((p,i)=>{{ if(p.v!=null) hp.push({{x:xpos(i), y:yB(p.v), t:p.v.toFixed(0)+uB}}); }}); }}
+  ctx.fillStyle='#8893a5'; ptsA.forEach((p,i)=>ctx.fillText(p.n, xpos(i)-3, ch-4));
+  canvas._hpts=hp; miniHover(canvas);
+}}
 function hline(ctx,h,val,ymin,ymax,color,label) {{
   const y=lerp(val,ymin,ymax,h-22,8); ctx.strokeStyle=color; ctx.setLineDash([4,3]);
   ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke(); ctx.setLineDash([]);
@@ -1689,20 +2238,93 @@ function vband(ctx,h,f0,f1,fmin,fmax,color) {{
   if (!f0||!f1) return; const a=logx(Math.max(f0,fmin),fmin,fmax), b=logx(Math.min(f1,fmax),fmin,fmax);
   if (b<=a) return; ctx.fillStyle=color; ctx.fillRect(a,8,b-a,h-30);
 }}
-function filterOverlay(ctx,h,fmin,fmax,xover) {{
+function filterOverlay(ctx,h,fmin,fmax,fms) {{
   if (CFG.dyn_notch) vband(ctx,h,CFG.dyn_notch.min,CFG.dyn_notch.max,fmin,fmax,'rgba(255,212,121,0.07)');
   if (CFG.gyro_lpf1 && CFG.gyro_lpf1.dyn) {{ vline(ctx,h,CFG.gyro_lpf1.dyn[0],fmin,fmax,'#5a9bd4','gyroLPF'); vline(ctx,h,CFG.gyro_lpf1.dyn[1],fmin,fmax,'#5a9bd4',''); }}
   if (CFG.dterm_lpf1 && CFG.dterm_lpf1.dyn) {{ vline(ctx,h,CFG.dterm_lpf1.dyn[0],fmin,fmax,'#d48fd4','dtermLPF'); vline(ctx,h,CFG.dterm_lpf1.dyn[1],fmin,fmax,'#d48fd4',''); }}
-  vline(ctx,h,xover,fmin,fmax,'#ff8a80','xover');
+  vline(ctx,h,fms,fmin,fmax,'#ffab40','f(Ms)');
+}}
+// Frequency where coherence drops below the gate for good (the trusted-band edge): scan for the
+// first point past which it stays under GATE for a small window, so a single dip doesn't trip it.
+function trustEdge(F,coh) {{
+  if (!F || !F.length) return null;
+  const n=F.length, win=Math.max(3,Math.floor(n*0.04));
+  for (let i=0;i<n-win;i++) {{ let below=true;
+    for (let j=i;j<i+win;j++) if (coh[j]>=GATE) {{ below=false; break; }}
+    if (below) return F[i]; }}
+  return F[n-1];
+}}
+// Shade the un-trusted (coherence < gate) region and mark the edge — echoed on coh, gain & phase so
+// the eye sees the flat gain sits inside the trusted band.
+function coherZone(ctx,h,ftrust,fmin,fmax,label) {{
+  if (ftrust && ftrust<fmax) vband(ctx,h,ftrust,fmax,fmin,fmax,'rgba(126,138,160,0.11)');
+  vline(ctx,h,ftrust,fmin,fmax,'#8a93a5',label||'');
 }}
 const root=document.getElementById('root');
 const single = R.total_passes<=1;
-const HIDDEN = new Set();   // pass indices whose overlay curves are hidden (checkbox toggles)
+const HIDDEN = new Set();   // pass indices whose overlay curves are hidden (pill toggles, global)
+
+// --- Shared visual identity: one colour + pictogram per INDICATOR and per CONFIG item, reused
+// everywhere they are named (tune score, evolution tiles, config tooltip, comparison table) so the
+// eye links them at a glance. Filter colours match the Bode overlay (gyro/dterm/notch). ---
+const IND={{
+  overshoot:{{c:'#ff7a6b',p:'▲'}}, rise:{{c:'#ffc14d',p:'↑'}}, settle:{{c:'#59c2b0',p:'↓'}},
+  margin:{{c:'#6fd36f',p:'∠'}}, ms:{{c:'#b58cff',p:'◎'}}, noise:{{c:'#4fa3e0',p:'≈'}}
+}};
+function citem(lbl) {{
+  if (/P\\/I\\/D/.test(lbl)) return {{c:'#9ecbff',p:'⚙'}};
+  if (/D_max/.test(lbl))    return {{c:'#ffab40',p:'▲'}};
+  if (/gyro/i.test(lbl))    return {{c:'#5a9bd4',p:'∿'}};
+  if (/D-term/i.test(lbl))  return {{c:'#d48fd4',p:'∿'}};
+  if (/notch/i.test(lbl))   return {{c:'#ffd479',p:'▽'}};
+  if (/RPM/i.test(lbl))     return {{c:'#aed581',p:'⟳'}};
+  return {{c:'#9ad',p:'·'}};
+}}
+// A pass's config as coloured+pictogram HTML, for the rich hover tooltip on any pass label.
+function cfgHTML(p) {{
+  const c=(p&&p.config)||{{}};
+  const row=(it,txt)=>'<div style="color:'+it.c+'">'+it.p+' '+txt+'</div>';
+  let s='<b style="color:#cfe3ff">'+(LANG==='fr'?'Passe ':'Pass ')+p.n+'</b>'
+    +(p.file?' <span style="color:#8893a5">'+p.file+'</span>':'')+'<div style="margin-top:4px">';
+  if (c.pids) s+=row(citem('P/I/D'), 'PID '+Object.entries(c.pids).map(([a,v])=>a+' '+v[0]+'/'+v[1]+'/'+v[2]).join('  '));
+  if (c.d_max) s+=row(citem('D_max'), 'D_max '+c.d_max.join('/'));
+  if (c.gyro_lpf1) s+=row(citem('gyro'), 'gyro LPF1 '+(c.gyro_lpf1.dyn?c.gyro_lpf1.dyn.join('–'):c.gyro_lpf1.static)+' Hz'
+     +(c.gyro_lpf1.type?' ('+c.gyro_lpf1.type+')':'')+(c.gyro_lpf2?' · LPF2 '+c.gyro_lpf2.static:''));
+  if (c.dterm_lpf1) s+=row(citem('D-term'), 'D-term LPF1 '+(c.dterm_lpf1.dyn?c.dterm_lpf1.dyn.join('–'):c.dterm_lpf1.static)+' Hz'
+     +(c.dterm_lpf2?' · LPF2 '+c.dterm_lpf2.static:''));
+  if (c.dyn_notch) s+=row(citem('notch'), 'dyn_notch ×'+c.dyn_notch.count+' Q'+c.dyn_notch.q+' ['+c.dyn_notch.min+'–'+c.dyn_notch.max+' Hz]');
+  if (c.rpm_harmonics) s+=row(citem('RPM'), 'RPM filter ×'+c.rpm_harmonics);
+  if (!c.pids) s+='<div style="color:#8893a5">'+(LANG==='fr'?'(config non lue dans ce log)':'(no config parsed)')+'</div>';
+  return s+'</div>';
+}}
+
+// Per-pass show/hide pills, repeated top-right of every axis block. They drive the global HIDDEN
+// set, so toggling a pass here hides its overlaid curves across the whole report.
+function passPills() {{
+  if (single) return null;
+  const wrap=el('div','passpills');
+  PASSES.forEach((p,i)=>{{
+    const off=HIDDEN.has(i), col=PAL[i%PAL.length];
+    const b=document.createElement('button');
+    b.className='pillbtn passtip'+(off?' off':''); b.textContent='P'+p.n;
+    b.dataset.pass=i;
+    b.style.borderColor=col; b.style.color=off?'#6b7689':col;
+    b.onclick=()=>{{ off?HIDDEN.delete(i):HIDDEN.add(i); render(); }};
+    wrap.appendChild(b);
+  }});
+  return wrap;
+}}
 
 function render() {{
   root.innerHTML='';
   W = Math.max(720, Math.min(1760, window.innerWidth - 48));   // responsive: fill the window
-  document.getElementById('h1').innerHTML = T('title')+' <span class="meta">— '+FILE+'</span>';
+  document.getElementById('hdr').innerHTML =
+      '<div class="banner-main"><span class="banner-icon">∿</span>'
+    + '<div><div class="banner-title">'+T('title')+'</div>'
+    + '<div class="banner-sub">'+T('subtitle')+'</div></div></div>'
+    + '<div class="banner-tags"><span class="chip">Chirp</span><span class="chip">Analysis</span>'
+    + '<span class="chip">Betaflight</span><span class="chip">Tuning</span></div>'
+    + '<div class="banner-file">— '+FILE+'</div>';
   document.getElementById('langbtn').textContent = T('lang_btn');
 
   // ---- Guide ----
@@ -1720,41 +2342,108 @@ function render() {{
     g.innerHTML=s; root.appendChild(g);
   }}
 
-  // ---- Current settings ----
-  if (CFG.pids) {{
-    const cb=el('div','axis'); let s='<h2>'+(single?T('cfg_init'):T('cfg_last'))+' <span class=meta>'+T('cfg_sub')+'</span></h2><div class=cfg>';
-    s+='<b>'+tip('pid','PID')+'</b> — '+Object.entries(CFG.pids).map(([a,v])=>a+' P'+v[0]+'/I'+v[1]+'/D'+v[2]).join(' &nbsp; ');
-    if (CFG.d_max) s+=' &nbsp; '+tip('dmax','D_max')+' '+CFG.d_max.join('/');
-    s+='<br>';
-    if (CFG.gyro_lpf1) s+='<b>'+tip('gyro_lpf','gyro')+'</b> lpf1 '+(CFG.gyro_lpf1.dyn?CFG.gyro_lpf1.dyn.join('–'):CFG.gyro_lpf1.static)+' Hz ('+CFG.gyro_lpf1.type+'), lpf2 '+(CFG.gyro_lpf2?CFG.gyro_lpf2.static:'?')+' Hz<br>';
-    if (CFG.dterm_lpf1) s+='<b>'+tip('dterm_lpf','D-term')+'</b> lpf1 '+(CFG.dterm_lpf1.dyn?CFG.dterm_lpf1.dyn.join('–'):CFG.dterm_lpf1.static)+' Hz, lpf2 '+(CFG.dterm_lpf2?CFG.dterm_lpf2.static:'?')+' Hz<br>';
-    if (CFG.dyn_notch) s+='<b>'+tip('dyn_notch','dyn_notch')+'</b> ×'+CFG.dyn_notch.count+' Q'+CFG.dyn_notch.q+' ['+CFG.dyn_notch.min+'–'+CFG.dyn_notch.max+' Hz] &nbsp; <b>'+tip('rpm_filter','RPM filter')+'</b> ×'+CFG.rpm_harmonics;
-    s+='</div>'; cb.innerHTML=s; root.appendChild(cb);
+  // ---- TUNE score (composite 0-100 + delta vs previous pass: better/worse after a config change) ----
+  if (PRI.tune_score && PRI.tune_score.overall!=null) {{
+    const ts=PRI.tune_score;
+    const box=el('div','axis score'); let s='<h2>'+T('score_h')+'</h2>';
+    let dtxt='';
+    const prev=(PRIMARY>0 && PASSES[PRIMARY-1] && PASSES[PRIMARY-1].tune_score) ? PASSES[PRIMARY-1].tune_score : null;
+    if (prev && prev.overall!=null) {{
+      const dv=Math.round((ts.overall-prev.overall)*10)/10;
+      const col=dv>0?'#7ddf7d':(dv<0?'#ff8a80':'#8893a5'), ar=dv>0?'▲':(dv<0?'▼':'=');
+      dtxt='<span class=scoredelta style="color:'+col+'">'+ar+' '+(dv>0?'+':'')+dv+' '+T('score_vs')+'</span>';
+    }}
+    s+='<div class=scoreband><span class=scorebig>'+ts.overall.toFixed(0)+'<span class=scoremax>/100</span></span>'
+     + '<span class=scoregrade>'+ts.grade+'</span>'+dtxt+'</div>';
+    const SUBL={{overshoot:'overshoot', rise:T('sc_rise'), margin:T('sc_margin'), ms:'Ms', noise:T('sc_noise')}};
+    let rows='';
+    for (const ax of Object.keys(ts.axes)) {{
+      const a=ts.axes[ax];
+      const sub=Object.keys(SUBL).filter(k=>a.subs[k]!=null).map(k=>'<span style="color:'+IND[k].c+'">'+IND[k].p+' '+SUBL[k]+' '+a.subs[k]+'</span>').join('  ');
+      rows+='<tr><td><b>'+ax+'</b></td><td><b style="color:#9ecbff">'+a.score.toFixed(0)+'</b></td><td>'+sub+'</td></tr>';
+    }}
+    s+='<table class=scoretab>'+rows+'</table>';
+    // every pass's overall score (small), with a star on the best — the comparative view at a glance
+    const scored=PASSES.map((p,i)=>({{n:p.n, i:i, v:(p.tune_score&&p.tune_score.overall)}})).filter(o=>o.v!=null);
+    if (scored.length>1) {{
+      const best=Math.max(...scored.map(o=>o.v));
+      const line=scored.map(o=>'<span class="passtip" data-pass="'+o.i+'" style="color:'+PAL[o.i%PAL.length]+'">P'+o.n+' '+o.v.toFixed(0)+'</span>'
+        +(o.v===best?'<span style="color:#ffd479"> ★</span>':'')).join('  ·  ');
+      s+='<div class="meta scoreall">'+T('score_all')+' '+line+'</div>';
+    }}
+    s+='<p class=meta>'+T('score_cap')+'</p>';
+    box.innerHTML=s; root.appendChild(box);
   }}
 
-  // ---- Overview (linked observations + multi-pass evolution) ----
-  if (PRI.synthesis && PRI.synthesis.length) {{
-    const box=el('div','axis guide'); root.appendChild(box);
-    box.appendChild(el('h2',null,T('synth_h')));
-    box.appendChild(el('p','meta',T('synth_intro')+' ('+T('pass_word')+' '+PRI.n+') :'));
-    const ul=el('ul','sugg'); for (const o of PRI.synthesis) ul.appendChild(el('li',null,loc(o)));
-    box.appendChild(ul);
-    if (!single) {{   // what changed from pass 1 to the latest, and did it help
-      const A=PASSES[0], B=PRI;
-      const fa=Object.fromEntries(cfgFields(A.config||{{}}));
-      const chg=cfgFields(B.config||{{}}).filter(([k,v])=>fa[k]!=null && fa[k]!==v).map(([k,v])=>k+' '+fa[k]+'→'+v);
-      const dl=[];
-      for (const ax of Object.keys(B.axes||{{}})) {{
-        const X=(A.axes||{{}})[ax], Y=B.axes[ax]; if(!X||!Y) continue;
-        const parts=[];
-        if (X.phase_margin_deg!=null && Y.phase_margin_deg!=null) parts.push(tip('phase_margin','marge')+' '+X.phase_margin_deg.toFixed(0)+'→'+Y.phase_margin_deg.toFixed(0)+'°');
-        const xo=(X.step||{{}}).metrics, yo=(Y.step||{{}}).metrics;
-        if (xo&&yo&&xo.overshoot_pct!=null&&yo.overshoot_pct!=null) parts.push('overshoot '+xo.overshoot_pct.toFixed(0)+'→'+yo.overshoot_pct.toFixed(0)+'%');
-        if (parts.length) dl.push('<b>'+ax+'</b> : '+parts.join(', '));
+  // ---- Per-axis indicator evolution (right after the score: it shows how each sub-metric moved
+  // pass to pass, backing up the single number above) ----
+  {{
+    // One colour AND one pattern (solid) for every axis — the axes are told apart by their labelled
+    // row, not by style. A second pattern (dashed) is used only inside the dual tile to separate its
+    // two curves. Hover a point to read its value.
+    const sm=(d,k)=>(d.step&&d.step.metrics)?d.step.metrics[k]:null;
+    // Ms healthy/danger reference bands (cf. glossary): 1.3–2 = sain, >2 = nerveux/peu robuste.
+    const MSZONES=[{{lo:1.3,hi:2.0,fill:'rgba(120,200,120,0.14)'}},{{lo:2.0,hi:9,fill:'rgba(255,120,120,0.12)'}}];
+    // each tile carries the shared INDICATOR identity (colour+picto from IND), so a column links to
+    // the same-coloured sub-score in the tune note above. Axes (rows) are told apart by their label.
+    const INDIC=[
+      {{k:'s', key:'overshoot', t:'overshoot', u:'%', g:d=>sm(d,'overshoot_pct'), r:d=>d.overshoot_range}},
+      {{k:'s', key:'rise', t:(LANG==='fr'?'montée':'rise'), u:'ms', g:d=>sm(d,'rise_ms'), r:d=>d.rise_range}},
+      {{k:'s', key:'settle', t:(LANG==='fr'?'établiss.':'settle'), u:'ms', g:d=>sm(d,'settle_ms'), r:d=>d.settle_range}},
+      {{k:'d', t:(LANG==='fr'?'marge (plein) · f(Ms) (tireté)':'margin (solid) · f(Ms) (dashed)'),
+        uA:'°', uB:'Hz', gA:d=>d.pm_guaranteed_deg, rA:d=>d.pm_guaranteed_range, gB:d=>d.f_ms_hz, rB:d=>d.f_ms_range}},
+      {{k:'s', key:'ms', t:'Ms', u:'', g:d=>d.ms, r:d=>d.ms_range, opts:{{ctx_lo:1.0, ctx_hi:2.1, zones:MSZONES}}}},
+    ];
+    const axesSet=[]; PASSES.forEach(p=>Object.keys(p.axes||{{}}).forEach(a=>{{ if(!axesSet.includes(a)) axesSet.push(a); }}));
+    const ord=['roll','pitch','yaw']; axesSet.sort((a,b)=>ord.indexOf(a)-ord.indexOf(b));
+    if (axesSet.length) {{
+      const box=el('div','axis'); root.appendChild(box);
+      box.appendChild(el('h2',null,T('evo_h')));
+      box.appendChild(el('div','meta',T('evo_cap')));
+      const mw=Math.max(170, Math.min(260, Math.floor((W-30)/3)-10)), mh=128;
+      const ptsFor=(axis,g,r)=>PASSES.map(p=>{{ const d=(p.axes||{{}})[axis]; const v=d?g(d):null; const rg=d?r(d):null;
+        return {{n:p.n, v:(v==null?null:v), lo:rg?rg[0]:null, hi:rg?rg[1]:null}}; }});
+      for (const axis of axesSet) {{
+        box.appendChild(el('div','passleg','<b style="border-bottom:2.5px solid #6b7689;padding-bottom:2px">'+axis.toUpperCase()+'</b>'));
+        const grid=el('div'); grid.style.lineHeight='0'; box.appendChild(grid);
+        for (const ind of INDIC) {{
+          if (ind.k==='d') {{   // dual tile: margin (green, solid) + f(Ms) (purple, dashed) — indicator colours
+            const A=ptsFor(axis,ind.gA,ind.rA), B=ptsFor(axis,ind.gB,ind.rB);
+            if (A.some(p=>p.v!=null)||B.some(p=>p.v!=null)) drawMini2(mkMini(grid,mw,mh), ind.t, A, B, IND.margin.c, IND.ms.c, ind.uA, ind.uB);
+          }} else {{
+            const col=IND[ind.key].c, pts=ptsFor(axis,ind.g,ind.r);
+            const o2=Object.assign({{}}, ind.opts||{{}}, {{unit:ind.u||''}});
+            if (pts.some(p=>p.v!=null)) drawMini(mkMini(grid,mw,mh), IND[ind.key].p+' '+ind.t, pts, col, o2);
+          }}
+        }}
       }}
-      let e='<p class=diff style="margin-top:8px"><b>'+T('synth_evo')+' :</b> '+(chg.length?chg.join(', '):'—')+'</p>';
-      if (dl.length) e+='<ul class=sugg>'+dl.map(x=>'<li>'+x+'</li>').join('')+'</ul>';
-      box.appendChild(el('div',null,e));
+    }}
+  }}
+
+  // (the former "current settings" cadre is dropped — the config is now in the pass-label tooltips
+  //  and the settings-comparison table below.)
+
+  // ---- Settings comparison (sits where the overview used to: the config diff across passes,
+  //      changed cells highlighted; the per-metric evolution is already shown in the tiles above) ----
+  if (!single) {{
+    const ref=PASSES.map(p=>cfgFields(p.config||{{}})).filter(a=>a.length).slice(-1)[0]||[];
+    if (ref.length) {{
+      const box=el('div','axis step cmp'); root.appendChild(box);
+      box.appendChild(el('h2',null,T('cmp_h')));
+      let changedAny=false, t='<table class=cmp><tr><th></th>';
+      PASSES.forEach((p,i)=>{{ t+='<th><span class=swatch style="background:'+PAL[i%PAL.length]+'"></span><span class="passtip" data-pass="'+i+'">'+T('pass_word')+' '+p.n+'</span></th>'; }});
+      t+='</tr>';
+      for (const [lbl] of ref) {{
+        const ci=citem(lbl);
+        t+='<tr><td class=lbl><span style="color:'+ci.c+'">'+ci.p+'</span> '+lbl+'</td>'; let prev=null;
+        PASSES.forEach(p=>{{ const m=Object.fromEntries(cfgFields(p.config||{{}})); const v=(lbl in m)?m[lbl]:'—';
+          const chg=(prev!==null && v!==prev); if(chg)changedAny=true;
+          t+='<td'+(chg?' class=chg':'')+'>'+v+'</td>'; prev=v; }});
+        t+='</tr>';
+      }}
+      t+='</table>';
+      if (!changedAny) t+='<p class=meta>'+T('cmp_none')+'</p>';
+      box.appendChild(el('div',null,t));
     }}
   }}
 
@@ -1845,29 +2534,18 @@ function render() {{
     }}
 
     const fsug=PRI.filter_suggestions||[], nsug=PRI.noise_suggestions||[];
-    let s='<h3>'+tip('resonance',T('filt_h'))+'</h3><ul class="sugg filt">';
+    let s='<details class="coll"><summary class="collh">'+tip('resonance',T('filt_h'))+'</summary><ul class="sugg filt">';
     for (const x of fsug) s+='<li>'+loc(x)+'</li>';
     for (const x of nsug) s+='<li>'+loc(x)+'</li>';
     if (!fsug.length && !nsug.length) s+='<li>—</li>';
-    s+='</ul>'; box.appendChild(el('div',null,s));
+    s+='</ul></details>'; box.appendChild(el('div',null,s));
   }}
 
   // ---- Step 2: PID (Bode + step response, all passes overlaid) ----
   {{
     const head=el('div','axis step pid'); root.appendChild(head);
     head.appendChild(el('h2',null,'<span class=stepnum>2</span>'+tip('pid',T('step2_h'))+' '+T('step2_sub')));
-    if (!single) {{   // one checkbox per pass — tick/untick to show/hide its overlaid curves
-      const lg=el('div','passleg'); lg.appendChild(el('span','meta',T('overlay')+' <i>('+T('overlay_hint')+')</i><br>'));
-      PASSES.forEach((p,i)=>{{
-        const lab=document.createElement('label');
-        const cb=document.createElement('input'); cb.type='checkbox'; cb.checked=!HIDDEN.has(i);
-        cb.addEventListener('change',()=>{{ cb.checked?HIDDEN.delete(i):HIDDEN.add(i); render(); }});
-        const sw=document.createElement('span'); sw.className='swatch'; sw.style.background=PAL[i%PAL.length];
-        lab.appendChild(cb); lab.appendChild(sw); lab.appendChild(document.createTextNode(passLabel(p)));
-        lg.appendChild(lab);
-      }});
-      head.appendChild(lg);
-    }}
+    if (!single) head.appendChild(el('div','meta',T('overlay')+' <i>('+T('overlay_hint')+')</i>'));
     // chirp spectrogram (primary pass): the rising sweep + resonances as horizontal bands
     const sg=PRI.spectrogram;
     if (sg && sg.levels_db && sg.levels_db.length) {{
@@ -1891,109 +2569,132 @@ function render() {{
       const tmaxS=sg.t_s[sg.t_s.length-1]-sg.t_s[0];
       for (let k=0;k<=5;k++) {{ const x=PAD+k/5*cw; ctx.fillText((tmaxS*k/5).toFixed(1)+(k===5?' s':''), x-6, Hs-6); }}
       ctx.fillStyle='#9ecbff'; ctx.fillText('freq (Hz) ↑   temps →', PAD, Hs-18);
-      head.appendChild(el('div','legend',T('spectro_cap').replace('{{sg}}',tip('spectrogram','spectrogramme')).replace('{{ax}}',sg.axis)));
+      let scap=T('spectro_cap').replace('{{sg}}',tip('spectrogram','spectrogramme')).replace('{{ax}}',sg.axis);
+      if (sg.n_sweeps) scap+=' '+(LANG==='fr'
+        ? 'Médiane de '+sg.n_sweeps+' sweeps (alignés sur le temps relatif) — la crête est plus nette, le bruit inter-sweeps moyenné.'
+        : 'Median of '+sg.n_sweeps+' sweeps (aligned on relative time) — sharper ridge, inter-sweep noise averaged out.');
+      head.appendChild(el('div','legend',scap));
     }}
   }}
   for (const axis of Object.keys(PRI.axes||{{}})) {{
     const d=PRI.axes[axis]; if(!d||!d.freq) continue;
     const box=el('div','axis'); root.appendChild(box);
-    const m=d.phase_margin_deg, fco=d.crossover_hz;
-    const mu=d.phase_margin_unc_deg;
-    const mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'°'+(mu?(' ±'+mu.toFixed(0)+'°'):'')+' @ '+(fco?fco.toFixed(0):'?')+' Hz');
+    const m=d.phase_margin_deg, fco=d.crossover_hz, mu=d.phase_margin_unc_deg;
+    const ms=d.ms, fms=d.f_ms_hz, pmg=d.pm_guaranteed_deg;
+    let mtxt;
+    if (ms!=null) {{
+      // Robust scalars only: Ms, f(Ms) and the guaranteed margin. The 0 dB crossover
+      // ("bandwidth") and the measured margin are dropped here — on very damped axes the
+      // crossover detection breaks down and reports nonsense (e.g. 2 Hz / 165°). The Bode
+      // plots below still carry the full picture.
+      mtxt = tip('sensitivity','Ms')+' '+ms.toFixed(2)+' @ '+(fms?fms.toFixed(0):'?')+' Hz'
+           + ' · '+tip('phase_margin',T('pm_gtd'))+' ≥'+pmg.toFixed(0)+'°';
+    }} else {{
+      mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'°'+(mu?(' ±'+mu.toFixed(0)+'°'):'')+' @ '+(fco?fco.toFixed(0):'?')+' Hz');
+    }}
     box.appendChild(el('h2',null,axis.toUpperCase()+' <span class=meta>['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz] — '+mtxt+'</span>'));
+    const pills=passPills(); if (pills) box.appendChild(pills);
     const fmin=d.band_hz[0]||1, fmax=d.band_hz[1]||500;
     const ser=PASSES.map((p,i)=>({{p:p.axes&&p.axes[axis], i:i, primary:i===PRIMARY}})).filter(o=>o.p&&o.p.freq&&!HIDDEN.has(o.i));
+    const PCOL=PAL[PRIMARY%PAL.length];   // primary pass colour, used for its inter-sweep band
 
-    box.appendChild(el('h3',null,tip('gain',T('bode_h'))));
+    const wrap=v=>((v%360)+360)%360-360;
+    // the trusted-band edge (coherence < gate), read on the primary pass and echoed on every plot
+    const ftrust = trustEdge(d.freq, d.coherence);
+    const trustLbl = (LANG==='fr'?'zone non fiable':'untrusted zone');
+
+    // 1) Coherence first — it defines where the rest can be trusted; the 0.8 gate edge carries down.
+    // The reliability note sits next to the title; the grey zone is labelled in-plot.
+    box.appendChild(el('h3',null,tip('coherence',LANG==='fr'?'Cohérence':'Coherence')
+      +' <span class="meta" style="text-transform:none;letter-spacing:0;font-weight:400">— '
+      +T('coh_cap').replace('{{gate}}',GATE.toFixed(1))+'</span>'));
+    let ch=mkCanvas(box,Hh-30).getContext('2d');
+    drawAxes(ch,Hh-30,fmin,fmax,0,1,'coh');
+    coherZone(ch,Hh-30,ftrust,fmin,fmax,trustLbl);
+    hline(ch,Hh-30,GATE,0,1,'#7e8aa0',GATE.toFixed(1));
+    if (d.coherence_band && !HIDDEN.has(PRIMARY)) plotBand(ch,Hh-30,d.freq,d.coherence_band[0],d.coherence_band[1],fmin,fmax,0,1,PCOL);
+    for (const o of ser) plotLine(ch,Hh-30,o.p.freq,o.p.coherence,o.p.coherence.map(_=>1),fmin,fmax,0,1,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2:1.3}});
+
+    // 2) Gain — filter-overlay legend moved up next to the title (the grey untrusted zone is still
+    //    echoed from coherence on the plot, but no longer needs its own legend entry).
+    const bodeLeg='<span style="text-transform:none;letter-spacing:0;font-weight:400;font-size:11px;margin-left:12px">'
+      +'<span style="color:#5a9bd4;margin-right:12px">│ '+tip('gyro_lpf',T('leg_gyro'))+'</span>'
+      +'<span style="color:#d48fd4;margin-right:12px">│ '+tip('dterm_lpf',T('leg_dterm'))+'</span>'
+      +'<span style="color:#ffd479;margin-right:12px">▮ '+tip('dyn_notch',T('leg_notch'))+'</span>'
+      +'<span style="color:#ffab40">│ '+tip('sensitivity',T('leg_fms'))+'</span></span>';
+    box.appendChild(el('h3',null,tip('gain',T('bode_h'))+bodeLeg));
     let gAll=[]; ser.forEach(o=>gAll=gAll.concat(o.p.gain_db));
+    if (d.gain_band) gAll=gAll.concat(d.gain_band[0],d.gain_band[1]);
     let gmin=Math.min(-12,...gAll), gmax=Math.max(12,...gAll);
     let g=mkCanvas(box,Hh).getContext('2d');
     drawAxes(g,Hh,fmin,fmax,gmin,gmax,'gain dB');
-    filterOverlay(g,Hh,fmin,fmax,fco);
+    coherZone(g,Hh,ftrust,fmin,fmax,'');
+    filterOverlay(g,Hh,fmin,fmax,fms);
     hline(g,Hh,0,gmin,gmax,'#5a6273','0 dB');
+    if (d.gain_band && !HIDDEN.has(PRIMARY)) plotBand(g,Hh,d.freq,d.gain_band[0],d.gain_band[1],fmin,fmax,gmin,gmax,PCOL);
     for (const o of ser) plotLine(g,Hh,o.p.freq,o.p.gain_db,o.p.coherence,fmin,fmax,gmin,gmax,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
-    box.appendChild(el('div','legend',
-      '<span style="color:#5a9bd4">│ '+tip('gyro_lpf',T('leg_gyro'))+'</span>'+
-      '<span style="color:#d48fd4">│ '+tip('dterm_lpf',T('leg_dterm'))+'</span>'+
-      '<span style="color:#ffd479">▮ '+tip('dyn_notch',T('leg_notch'))+'</span>'+
-      '<span style="color:#ff8a80">│ '+tip('crossover',T('leg_xover'))+'</span>'));
+
+    // 3) Phase — same trusted-zone overlay.
+    box.appendChild(el('h3',null,tip('phase',LANG==='fr'?'Phase':'Phase')));
     let p=mkCanvas(box,Hh).getContext('2d');
-    drawAxes(p,Hh,fmin,fmax,-360,0,'phase °'); hline(p,Hh,-180,-360,0,'#ff8a80','-180°');
-    for (const o of ser) plotLine(p,Hh,o.p.freq,o.p.phase_deg.map(v=>((v%360)+360)%360-360),o.p.coherence,fmin,fmax,-360,0,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
-    box.appendChild(el('div','legend',T('coh_cap').replace('{{coh}}',tip('coherence','coh')).replace('{{gate}}',GATE.toFixed(1))));
-    let ch=mkCanvas(box,Hh-40).getContext('2d');
-    drawAxes(ch,Hh-40,fmin,fmax,0,1,'coh'); hline(ch,Hh-40,GATE,0,1,'#7e8aa0',GATE.toFixed(1));
-    for (const o of ser) plotLine(ch,Hh-40,o.p.freq,o.p.coherence,o.p.coherence.map(_=>1),fmin,fmax,0,1,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2:1.3}});
+    drawAxes(p,Hh,fmin,fmax,-360,0,'phase °');
+    coherZone(p,Hh,ftrust,fmin,fmax,'');
+    hline(p,Hh,-180,-360,0,'#ff8a80','-180°');
+    if (d.phase_band && !HIDDEN.has(PRIMARY)) plotBand(p,Hh,d.freq,d.phase_band[0].map(wrap),d.phase_band[1].map(wrap),fmin,fmax,-360,0,PCOL);
+    for (const o of ser) plotLine(p,Hh,o.p.freq,o.p.phase_deg.map(wrap),o.p.coherence,fmin,fmax,-360,0,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
+    vline(p,Hh,fms,fmin,fmax,'#ffab40','f(Ms)');
 
     // step response (time domain)
     const sser=ser.filter(o=>o.p.step && o.p.step.t_ms && o.p.step.t_ms.length);
     if (sser.length) {{
       box.appendChild(el('h3',null,tip('step_response',T('step_h'))));
-      let xmax=0, ymax=1.3; sser.forEach(o=>{{ xmax=Math.max(xmax,o.p.step.t_ms[o.p.step.t_ms.length-1]); ymax=Math.max(ymax,...o.p.step.y); }});
+      // Full window on the main plot; y normalised to 0.25 steps so 1.0 is always a gridline.
+      let xmax=0, ymax=1.0; sser.forEach(o=>{{ xmax=Math.max(xmax,o.p.step.t_ms[o.p.step.t_ms.length-1]); ymax=Math.max(ymax,...o.p.step.y); }});
+      if (d.step.y_hi) ymax=Math.max(ymax,...d.step.y_hi);
+      ymax=Math.ceil(ymax/0.25)*0.25;
       let st=mkCanvas(box,Hh).getContext('2d');
-      drawAxesLin(st,Hh,xmax,0,ymax,'step');
+      drawAxesLin(st,Hh,xmax,0,ymax,'step',0.25);
       hline(st,Hh,1,0,ymax,'#5a6273','1.0');
+      if (d.step.y_lo && !HIDDEN.has(PRIMARY)) plotBandLin(st,Hh,d.step.t_ms,d.step.y_lo,d.step.y_hi,xmax,0,ymax,PCOL);
       for (const o of sser) plotLin(st,Hh,o.p.step.t_ms,o.p.step.y,xmax,0,ymax,PAL[o.i%PAL.length],{{dim:!o.primary, lw:o.primary?2.2:1.5}});
+      stepInset(st,Hh,sser,d,PCOL);   // zoomed incrustation on the rise/overshoot (lower-right)
       const mt=d.step&&d.step.metrics;
       if (mt) box.appendChild(el('div','legend',T('metrics').replace('{{ov}}',mt.overshoot_pct).replace('{{rise}}',mt.rise_ms==null?'–':mt.rise_ms).replace('{{settle}}',mt.settle_ms==null?'–':mt.settle_ms)));
     }}
-
-    // measured diagnosis (Bode + step) — observations only, PID advice is left to the LLM
-    const ul=el('ul','diag');
-    for (const line of (d.diagnosis||[])) ul.appendChild(el('li',null,loc(line)));
-    for (const line of (d.step_diagnosis||[])) ul.appendChild(el('li',null,loc(line)));
-    box.appendChild(ul);
-  }}
-
-  // ---- Step 3: History ----
-  {{
-    const box=el('div','axis step cmp'); root.appendChild(box);
-    box.appendChild(el('h2',null,'<span class=stepnum>3</span>'+T('step3_h')));
-    let s='<div class=cfg>';
-    PASSES.forEach((p,i)=>{{
-      s+='<div><span class=swatch style="background:'+PAL[i%PAL.length]+'"></span><b>'+passLabel(p)+'</b>';
-      const pd=p.config&&p.config.pids;
-      if (pd) s+=' <span class=meta>— P/D '+Object.entries(pd).map(([a,v])=>a[0]+' '+v[0]+'/'+v[2]).join(' ')+'</span>';
-      if (p.diff) s+='<br><span class=diff>'+T('step3_changes')+' '+p.diff+'</span>';
-      s+='</div>';
-    }});
-    if (PASSES.length<=1) s+='<p class=meta>'+T('step3_single')+'</p>';
-    s+='</div>'; box.appendChild(el('div',null,s));
-    // exhaustive settings comparison table (PID + every filter), changed cells highlighted
-    if (PASSES.length>=2) {{
-      const ref=PASSES.map(p=>cfgFields(p.config||{{}})).filter(a=>a.length).slice(-1)[0]||[];
-      if (ref.length) {{
-        let changedAny=false, t='<h3>'+T('cmp_h')+'</h3><table class=cmp><tr><th></th>';
-        PASSES.forEach((p,i)=>{{ t+='<th><span class=swatch style="background:'+PAL[i%PAL.length]+'"></span>'+T('pass_word')+' '+p.n+'</th>'; }});
-        t+='</tr>';
-        for (const [lbl] of ref) {{
-          t+='<tr><td class=lbl>'+lbl+'</td>'; let prev=null;
-          PASSES.forEach(p=>{{ const m=Object.fromEntries(cfgFields(p.config||{{}})); const v=(lbl in m)?m[lbl]:'—';
-            const chg=(prev!==null && v!==prev); if(chg)changedAny=true;
-            t+='<td'+(chg?' class=chg':'')+'>'+v+'</td>'; prev=v; }});
-          t+='</tr>';
-        }}
-        t+='</table>';
-        if (!changedAny) t+='<p class=meta>'+T('cmp_none')+'</p>';
-        box.appendChild(el('div',null,t));
-      }}
+    // inter-sweep repeatability: median values are shown above; here is the measured min/max spread
+    if (d.n_sweeps) {{
+      const rg=a=>a&&a[0]!=null?('['+a[0]+'–'+a[1]+']'):'–';
+      const fr='Répétabilité sur '+d.n_sweeps+' sweeps (bande ombrée = étendue min/max inter-sweeps) — overshoot '+rg(d.overshoot_range)+' %, montée '+rg(d.rise_range)+' ms, Ms '+rg(d.ms_range)+', marge '+rg(d.phase_margin_range)+'°.';
+      const en='Repeatability over '+d.n_sweeps+' sweeps (shaded band = inter-sweep min/max range) — overshoot '+rg(d.overshoot_range)+' %, rise '+rg(d.rise_range)+' ms, Ms '+rg(d.ms_range)+', margin '+rg(d.phase_margin_range)+'°.';
+      box.appendChild(el('div','legend',LANG==='fr'?fr:en));
     }}
+
+    // (per-axis textual diagnosis intentionally omitted here — redundant with the evolution tiles
+    // at the top; the observations remain in the text/JSON output for the LLM.)
   }}
 
   // ---- Glossary ----
   {{
-    const order=['chirp','gain','phase','phase_margin','crossover','coherence','resonance',
+    const order=['chirp','gain','phase','sensitivity','phase_margin','crossover','coherence','resonance',
       'noise_psd','motor_harmonics','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','spectrogram','step_response','propwash'];
-    const box=el('div','axis'); root.appendChild(box); box.appendChild(el('h2',null,T('glossary_h')));
-    let s='<dl class=glos>';
+    const box=el('div','axis'); root.appendChild(box);
+    let s='<details class="coll"><summary class="collh2">'+T('glossary_h')+'</summary><dl class=glos>';
     for (const k of order) {{ const g=GL[k]; if (g && (g[LANG]||g.fr)) {{
       const head=(g[LANG]||g.fr).split(/ : | — |: /)[0];
       s+='<dt>'+head+'</dt><dd>'+(g[LANG]||g.fr)+'</dd>'; }} }}
-    s+='</dl>'; box.appendChild(el('div',null,s));
+    s+='</dl></details>'; box.innerHTML=s;
   }}
 }}
 document.getElementById('langbtn').onclick=()=>{{ LANG = (LANG==='fr'?'en':'fr'); render(); }};
 let _rt; window.addEventListener('resize', ()=>{{ clearTimeout(_rt); _rt=setTimeout(render, 150); }});
+// Rich coloured config tooltip on any pass label (.passtip[data-pass]), positioned at the cursor.
+document.addEventListener('mousemove', e=>{{
+  const ht=document.getElementById('htip'), el=e.target.closest && e.target.closest('.passtip[data-pass]');
+  if (el) {{ ht.innerHTML=cfgHTML(PASSES[+el.dataset.pass]); ht.style.display='block';
+    ht.style.left=Math.min(e.clientX+14, window.innerWidth-ht.offsetWidth-12)+'px';
+    ht.style.top=Math.min(e.clientY+14, window.innerHeight-ht.offsetHeight-12)+'px'; }}
+  else ht.style.display='none';
+}});
 render();
 </script></body></html>
 """
@@ -2026,14 +2727,29 @@ def _print_human(report: dict, lang: str = "fr") -> None:
     for axis, d in output["axes"].items():
         print(f"-- {axis.upper()} " + "-" * 30)
         print(f"  Input / band     : {d['input_col']}  [{d['band_hz'][0]:g}–{d['band_hz'][1]:g} Hz]  n={d['n_samples']}")
-        if d["phase_margin_deg"] is not None:
+        if d.get("ms") is not None:
+            print(f"  Sensitivity peak : Ms {d['ms']:.2f} @ {d['f_ms_hz']:.0f} Hz")
+        # Guaranteed margin (robust: PM >= 2*asin(1/2Ms)) replaces the 0 dB-crossover margin, which
+        # breaks down on damped axes (e.g. 165° @ 2 Hz). Fall back to the measured one only if Ms is absent.
+        if d.get("pm_guaranteed_deg") is not None:
+            print(f"  Phase margin     : >= {d['pm_guaranteed_deg']:.0f} deg (guaranteed from Ms)")
+        elif d["phase_margin_deg"] is not None:
             mu = d.get("phase_margin_unc_deg")
-            print(f"  Phase margin     : {d['phase_margin_deg']:.0f}{(' ±' + format(mu, '.0f')) if mu else ''} deg @ {d['crossover_hz']:.0f} Hz")
+            print(f"  Phase margin     : {d['phase_margin_deg']:.0f}{(' ±' + format(mu, '.0f')) if mu else ''} deg @ {d['crossover_hz']:.0f} Hz (measured; scalar fragile on damped axes)")
         else:
             print("  Phase margin     : no 0 dB crossover in coherent band")
         st = (d.get("step") or {}).get("metrics")
         if st:
             print(f"  Step response    : overshoot {st['overshoot_pct']}%  rise {st['rise_ms']} ms  settle {st['settle_ms']} ms")
+        # Resonances in the closed-loop gain (full-resolution, coherent band) — list every one so a
+        # suggestion can reason about how many and how tall, not just the worst-case scalar below.
+        pks = d.get("peaks") or []
+        if pks:
+            print("  Gain resonances  : " + ", ".join(
+                f"{p['freq_hz']:.0f} Hz {p['gain_db']:+.0f} dB (prom {p['prominence_db']:.0f})" for p in pks[:5]))
+        nm = _noise_margin_db(d)
+        if nm is not None:
+            print(f"  HF noise margin  : {nm:.0f} dB below 0 dB (worst HF gain incl. resonances; D-term ceiling)")
         print()
         for hint in d["diagnosis"]:
             print(f"  > {loc(hint)}")

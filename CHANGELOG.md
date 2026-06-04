@@ -7,6 +7,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-06-04
+
+### Added
+- Chirp report — **inter-sweep repeatability**: when a log triggers the chirp
+  several times on an axis, each sweep is analysed independently and aggregated
+  into a median curve + min/max band on gain/phase/coherence/step, and median ±
+  range on the scalars. Single-sweep logs render byte-identically to before. A
+  multi-sweep axis spectrogram is the per-cell median (cleaner ridge).
+- Chirp report — composite **tune score** (0–100 + letter grade), per axis and
+  overall, blending overshoot, rise, guaranteed phase margin, Ms and HF noise
+  margin; shown with the delta vs the previous pass and a per-pass scoreboard
+  (★ on the best) — a comparative gauge of better/worse than the last config.
+- Chirp report — **per-axis indicator evolution** panel (small multiples across
+  passes, median dot + inter-sweep whisker), under the score; hover a point for
+  its value.
+- Chirp report — a shared **visual identity** (colour + pictogram) per indicator
+  and per config item, reused across the tune score, evolution tiles, comparison
+  table and the per-pass config tooltip.
+- Chirp report — a **rich config tooltip** on every pass label (pills, scoreboard,
+  comparison header) showing that pass's PID + filters; per-pass **show/hide
+  pills** in each axis block header; a zoomed **inset** on the step response.
+
+### Changed
+- Chirp report — restyled header banner (CHIRP ANALYZER + keyword chips);
+  coherence reliability note moved beside its title with the untrusted zone
+  labelled in-plot; Bode filter legend moved beside its title; step y-scale
+  normalised to 0.25 steps (1.0 always a gridline); collapsible "Filtering
+  leads" and "Glossary"; the standalone "current settings" and "history" cadres
+  dropped (config now lives in the tooltips + comparison table).
+- Chirp text output — per-axis HF noise margin (peak-aware: folds in the
+  resolved resonances) and gain resonances added; the phase-margin line now
+  reports the robust guaranteed margin instead of the fragile 0 dB-crossover one.
+- README — chirp section documents every invocation mode (batch chronological,
+  incremental, language) with a live example report and screenshot.
+
 ## [0.4.0] — 2026-06-03
 
 ### Removed

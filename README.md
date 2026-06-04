@@ -58,18 +58,36 @@ Upload via the Skills API — see the [official guide](https://platform.claude.c
 
 ## Chirp analysis → guided tuning report
 
+[![Example chirp tuning report — click for the live HTML](assets/Betaflight-claude-skill_scripts_full_report.png)](https://raw.githack.com/SebGalina/betaflight-claude-skill/main/scripts/full_report.html)
+
+> 🔎 **[Open the live example report »](https://raw.githack.com/SebGalina/betaflight-claude-skill/main/scripts/full_report.html)** — a real multi-pass run, self-contained, with the live FR/EN toggle, hover tooltips and pass show/hide. (The screenshot above is the same report.)
+
 The flagship workflow. `scripts/chirp_analysis.py` turns a closed-loop **chirp** log into a complete, self-contained tuning report. Betaflight's built-in chirp generator (`debug_mode = CHIRP`) sweeps a sine onto `currentPidSetpoint`, cycling roll → pitch → yaw. Generate it on the FC (`set debug_mode = CHIRP`, tune `chirp_*`), fly the dedicated identification flight, then:
 
+```bash
+# One log → one report. Auto-appends the pass to chirp_history.json next to the HTML,
+# so each later run stacks on top ("au fil de l'eau" / incremental before-after):
+python -m scripts.chirp_analysis flight.bbl --html report.html
+python -m scripts.chirp_analysis flight_after_tweak.bbl --html report.html   # 2nd pass, stacks
+
+# A fixed batch of logs in ONE report, exactly these, oldest → newest, ignoring any history:
+python -m scripts.chirp_analysis stock.bbl tune1.bbl tune2.bbl tune3.bbl --no-history --html report.html
+
+# Options: --lang en (initial UI language; FR/EN still toggles live in the HTML),
+#          --json (machine-readable), --history FILE (custom history path).
 ```
-python -m scripts.chirp_analysis <log.bbl> --html report.html
-# before/after: pass several logs;   English: add --lang en
-```
+
+The newest log on the line is the **reference pass** (it carries the tune score and the headline curves); the tune-score delta and the before/after overlay compare against the pass before it — so **list logs chronologically, oldest first**.
+
+**Asking Claude (skill) to do it** — no command needed, just say so; trigger keywords: *chirp*, *tuning report*, *Bode / frequency response*, *step response*, *before/after tune*, *analyse mon log chirp*, *compare these chirp logs*.
 
 The HTML opens offline (no external dependencies) and is a **bilingual (FR/EN, live toggle) guided assistant** ordered **Filtering → PID → History**:
 
-- per-axis **Bode** (gain dB / phase deg / coherence) + **step response**, with the phase margin reported with an uncertainty;
+- a composite **tune score** (0–100 + grade) per axis and overall, with the **delta vs the previous pass** and a per-pass scoreboard (★ on the best) — at-a-glance, is this config better or worse than the last;
+- a **per-axis indicator evolution** panel across passes (overshoot, rise, settle, guaranteed margin, f(Ms), Ms) — each indicator with a colour + pictogram reused everywhere;
+- per-axis **Bode** (gain dB / phase deg / coherence) + **step response** (with a zoomed inset on the overshoot), the guaranteed phase margin, and **inter-sweep repeatability bands** when a log holds several chirps on an axis;
 - a **gyro noise spectrum** (raw vs filtered) with **motor harmonics located from eRPM**, the current filter cut-offs drawn on it, and which filters could be loosened or disabled;
-- a **chirp spectrogram** (the rising sweep on a log axis), a throttle × frequency resonance map, and a **multi-pass overlay** with an exhaustive settings-comparison table for before/after;
+- a **chirp spectrogram** (the rising sweep on a log axis), a throttle × frequency resonance map, and a **multi-pass overlay** with an exhaustive settings-comparison table + per-pass config tooltips for before/after;
 - plain-language **observations** read directly from the PID/filter settings in the log — fully deterministic (no LLM), so the same log always gives the same report.
 
 The firmware debug mapping is auto-detected (current BF logs only `debug[0]`; the legacy `debug[1..3]` path is kept as a fallback). `--json` is machine-readable; `--history`/`--no-history` control the accumulated history. See `references/chirp-tuning.md`.
