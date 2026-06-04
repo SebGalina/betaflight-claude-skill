@@ -1562,14 +1562,18 @@ GLOSSARY = {
               "arrives in opposition: if gain is still ≥ 0 dB there, the loop self-sustains and oscillates.",
     },
     "phase_margin": {
-        "fr": "Marge de phase : de combien de degrés on est encore au-dessus de -180° à l'endroit où "
-              "le gain croise 0 dB. C'est la réserve de stabilité. >45° = sain et amorti ; 30-45° = "
-              "correct ; 15-30° = limite, ça commence à rebondir ; <15° ou négatif = la boucle sonne. "
+        "fr": "Marge de phase : la réserve de stabilité (degrés avant -180°). >45° = sain et amorti ; "
+              "30-45° = correct ; 15-30° = limite, ça commence à rebondir ; <15° = la boucle sonne. "
+              "Classiquement lue au croisement 0 dB, mais ce point décroche sur une réponse très amortie ; "
+              "le rapport reporte donc la marge GARANTIE déduite du pic de sensibilité Ms "
+              "(PM ≥ 2·arcsin(1/2·Ms)) — d'où le repère f(Ms) sur les graphes, pas le croisement 0 dB. "
               "Baisser P/D ou filtrer redonne de la marge.",
-        "en": "Phase margin: how many degrees you are still above -180° at the point where gain crosses "
-              "0 dB. It is the stability reserve. >45° = healthy and damped; 30-45° = fine; 15-30° = "
-              "marginal, starts to bounce; <15° or negative = the loop rings. Lowering P/D or adding "
-              "filtering restores margin.",
+        "en": "Phase margin: the stability reserve (degrees before -180°). >45° = healthy and damped; "
+              "30-45° = fine; 15-30° = marginal, starts to bounce; <15° = the loop rings. Classically "
+              "read at the 0 dB crossover, but that point breaks down on a very damped response; the "
+              "report therefore states the GUARANTEED margin from the sensitivity peak Ms "
+              "(PM ≥ 2·arcsin(1/2·Ms)) — hence the f(Ms) marker on the plots, not the 0 dB crossover. "
+              "Lowering P/D or adding filtering restores margin.",
     },
     "sensitivity": {
         "fr": "Pic de sensibilité Ms : Ms = max|S(f)|, avec S = 1/(1+L) = 1−T la fonction de "
@@ -2072,15 +2076,18 @@ function drawAxes(ctx,h,fmin,fmax,ymin,ymax,ylabel) {{
     ctx.fillStyle='#8893a5'; ctx.fillText(f>=1000?(f/1000)+'k':f, x-6, h-8); }}
   ctx.fillStyle='#9ecbff'; ctx.fillText(ylabel, PAD, 7);
 }}
-function drawAxesLin(ctx,h,xmax,ymin,ymax,ylabel,ystep) {{
+function drawAxesLin(ctx,h,xmax,ymin,ymax,ylabel,ystep,xminor) {{
   ctx.clearRect(0,0,W,h); ctx.strokeStyle='#2a2f3a'; ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif'; ctx.lineWidth=1;
   if (ystep) {{ for (let yv=ymin; yv<=ymax+1e-9; yv+=ystep) {{ const y=lerp(yv,ymin,ymax,h-22,8);  // fixed 0.25 grid so 1.0 is always a line
       ctx.strokeStyle='#2a2f3a'; ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke();
       ctx.fillStyle='#8893a5'; ctx.fillText(yv.toFixed(2), 4, y+3); }} }}
   else for (let k=0;k<=4;k++) {{ const yv=ymin+(ymax-ymin)*k/4, y=lerp(yv,ymin,ymax,h-22,8);
     ctx.beginPath(); ctx.moveTo(PAD,y); ctx.lineTo(W-12,y); ctx.stroke(); ctx.fillText(yv.toFixed(2), 4, y+3); }}
+  // faint minor x gridlines (e.g. every 10 ms) so the rise/settle timing can be gauged by eye
+  if (xminor) for (let xv=xminor; xv<xmax; xv+=xminor) {{ const x=lerp(xv,0,xmax,PAD,W-12);
+    ctx.strokeStyle='#23272f'; ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke(); }}
   for (let k=0;k<=5;k++) {{ const xv=xmax*k/5, x=lerp(xv,0,xmax,PAD,W-12);
-    ctx.strokeStyle='#20242e'; ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke();
+    ctx.strokeStyle='#3a4150'; ctx.beginPath(); ctx.moveTo(x,8); ctx.lineTo(x,h-22); ctx.stroke();
     ctx.fillStyle='#8893a5'; ctx.fillText(xv.toFixed(0)+(k===5?' ms':''), x-6, h-8); }}
   ctx.fillStyle='#9ecbff'; ctx.fillText(ylabel, PAD, 7);
 }}
@@ -2421,7 +2428,7 @@ function render() {{
     const scored=PASSES.map((p,i)=>({{n:p.n, i:i, v:(p.tune_score&&p.tune_score.overall)}})).filter(o=>o.v!=null);
     if (scored.length>1) {{
       const best=Math.max(...scored.map(o=>o.v));
-      const line=scored.map(o=>'<span class="passtip" data-pass="'+o.i+'" style="color:'+PAL[o.i%PAL.length]+'">P'+o.n+' '+o.v.toFixed(0)+'</span>'
+      const line=scored.map(o=>'<span class="passtip" data-pass="'+o.i+'" style="color:'+PAL[o.i%PAL.length]+'">P'+o.n+' ('+o.v.toFixed(0)+')</span>'
         +(o.v===best?'<span style="color:#ffd479"> ★</span>':'')).join('  ·  ');
       s+='<div class="meta scoreall">'+T('score_all')+' '+line+'</div>';
     }}
@@ -2509,12 +2516,16 @@ function render() {{
       box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro · '+(tm.source||'?')+')'
         +' <span class="maptip" title="">?</span>'));
       const rows=tm.levels_db.length, cols=tm.freqs.length;
-      const flat=tm.levels_db.flat().filter(v=>v!==null);
-      const lo=Math.min(...flat), hi=Math.max(...flat);
+      // Robust colour scale: anchor to the 10th–98th percentiles, not the absolute min/max. With raw
+      // min/max a single quiet cell drags the floor down and the whole map saturates red even when the
+      // noise is fairly uniform — a contrast artefact, not "noisy everywhere". Percentiles fix that:
+      // a calm map reads blue/green, only genuine hot-spots (top ~2%) go red.
+      const flat=tm.levels_db.flat().filter(v=>v!==null).sort((a,b)=>a-b);
+      const lo=flat[Math.floor(flat.length*0.10)], hi=flat[Math.floor(flat.length*0.98)];
       const cw=W-PAD-12, chh=22, H2=rows*chh+30;
       const ctx=mkCanvas(box,H2).getContext('2d'); ctx.clearRect(0,0,W,H2);
       for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {{
-        const v=tm.levels_db[r][c]; if (v===null) continue; const tn=(v-lo)/((hi-lo)||1);
+        const v=tm.levels_db[r][c]; if (v===null) continue; const tn=Math.max(0,Math.min(1,(v-lo)/((hi-lo)||1)));
         ctx.fillStyle='rgb('+Math.round(255*Math.min(1,tn*1.6))+','+Math.round(120*Math.max(0,1-Math.abs(tn-0.5)*2))+','+Math.round(255*(1-tn))+')';
         ctx.fillRect(PAD+c*cw/cols, 8+(rows-1-r)*chh, cw/cols+1, chh);
       }}
@@ -2707,7 +2718,7 @@ function render() {{
       if (d.step.y_hi) ymax=Math.max(ymax,...d.step.y_hi);
       ymax=Math.ceil(ymax/0.25)*0.25;
       let st=mkCanvas(box,Hh).getContext('2d');
-      drawAxesLin(st,Hh,xmax,0,ymax,'step',0.25);
+      drawAxesLin(st,Hh,xmax,0,ymax,'step',0.25,10);   // minor gridlines every 10 ms
       hline(st,Hh,1,0,ymax,'#5a6273','1.0');
       // rise time is measured 10% → 90% of the final value; show those two thresholds (labels left,
       // away from the lower-right inset) so the "rise X ms" number is self-explanatory.

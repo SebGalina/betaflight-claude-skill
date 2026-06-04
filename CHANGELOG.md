@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-06-04
+
+### Fixed
+- Chirp report — throttle × frequency map now uses a **robust percentile (p10–p98)
+  colour scale**: a fairly uniform map no longer saturates red (the old absolute
+  min/max scale was a contrast artefact, not "noise everywhere").
+
+### Changed
+- Chirp report — step response draws faint **10 ms minor gridlines** so rise/settle
+  timing can be gauged by eye.
+- Chirp report — the phase-margin glossary now states the report uses the
+  **guaranteed margin from Ms** (with the f(Ms) marker), not the fragile 0 dB-crossover
+  margin.
+- Chirp report — per-pass scoreboard shows each score in parentheses.
+- Refreshed the live example report (`scripts/full_report.html`) and its screenshot.
+
 ## [0.6.0] — 2026-06-04
 
 ### Added
