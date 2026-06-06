@@ -1,6 +1,6 @@
 ---
 name: betaflight
-description: Use whenever the user mentions Betaflight, FPV drone firmware, flight-controller config, PID/filter/rates tuning, or blackbox log analysis — or shares a Betaflight artifact: a CLI diff/dump (lines like 'diff all', 'set ', 'feature ', 'resource ') or a .bbl/.bfl blackbox log, even when not named as such. Covers flight symptoms (oscillations, wobble, propwash, jello, hot motors, drift), motor/ESC and RX/ELRS/CRSF setup, builds from 3" to 10" (cinewhoop, tinywhoop, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and configuring a new drone from scratch (setup wizard). Trigger even when phrased casually ("mon drone wobble", "PID help", "config FC") — under-triggering is worse than over-triggering.
+description: "Use whenever the user mentions Betaflight, FPV drone firmware, flight-controller config, PID/filter/rates tuning, or blackbox log analysis — or shares a Betaflight artifact: a CLI diff/dump (lines like 'diff all', 'set ', 'feature ', 'resource ') or a .bbl/.bfl blackbox log, even when not named as such. Covers flight symptoms (oscillations, wobble, propwash, jello, hot motors, drift), motor/ESC and RX/ELRS/CRSF setup, builds from 3\" to 10\" (cinewhoop, tinywhoop, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and configuring a new drone from scratch (setup wizard). Trigger even when phrased casually (\"mon drone wobble\", \"PID help\", \"config FC\") — under-triggering is worse than over-triggering."
 ---
 
 # Betaflight Assistant

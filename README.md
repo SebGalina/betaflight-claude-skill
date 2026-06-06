@@ -298,6 +298,54 @@ Once installed, just talk to Claude — no explicit invocation needed:
 
 ## Running the scripts manually
 
+### Python dependencies
+
+> **Claude Code Pro / Max users:** Claude installs dependencies and runs the scripts automatically — no manual setup needed.
+
+For all other users (Free, Team, API, claude.ai web/desktop without an automated-run tier), install once from the repo root.
+
+#### With uv (recommended)
+
+[uv](https://docs.astral.sh/uv/) is significantly faster than pip and handles the venv for you:
+
+```bash
+# Install uv if you don't have it
+pip install uv          # or: curl -Ls https://astral.sh/uv/install.sh | sh
+
+# One-time setup
+uv venv
+uv pip install -r requirements.txt   # or a subset: uv pip install numpy pandas scipy
+
+# Run any script — no activation needed
+uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
+uv run python -m scripts.analyze_blackbox your_log.bbl --stats
+```
+
+#### With venv + pip
+
+```bash
+python -m venv .venv
+
+# Activate (macOS / Linux)
+source .venv/bin/activate
+
+# Activate (Windows)
+.venv\Scripts\activate
+
+# Install — choose one:
+pip install -r requirements.txt   # full (all scripts + eval runner)
+pip install numpy pandas scipy    # scripts only
+pip install anthropic python-dotenv  # eval runner only
+```
+
+After activation, use `python -m scripts.<name>` as shown below. Re-activate the venv in each new terminal session.
+
+`fetch_presets.py`, `parse_diff.py`, `validate_config.py`, and `selftest.py` use the standard library only — no install needed.
+
+**Python 3.10+ required** (the scripts use `X | Y` union type syntax).
+
+### Commands
+
 ```bash
 python -m scripts.parse_diff evals/sample_diff.txt
 python -m scripts.validate_config evals/sample_diff.txt
