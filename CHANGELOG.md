@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-06-06
+
+### Changed
+- Chirp report — **major UI redesign** of the HTML report:
+  - the **chirp spectrogram** is now a standalone *measurement sanity-check* cadre
+    placed **first** (before Filtering), confirming the sweep actually covered the
+    band before anything is read off it.
+  - per-axis Bode/step blocks are titled **PID Roll / Pitch / Yaw**; the redundant
+    standalone "PID" section header is gone.
+  - the **tune note** shows the per-axis detail as a **bordered table** —
+    indicator-coloured headers, centred white values.
+  - the analysis pipeline is drawn as a **numbered flowchart/sequence diagram**
+    (no longer pill-shaped chips that looked like the header tags).
+  - every block carries a **gradient accent liseré** (`#ff5b2e → #2dd4ff`).
+  - **pictograms** before every section title; tooltip terms are uniformly
+    dotted-underlined.
+  - the **glossary** is sorted alphanumerically (in the active language) and gains a
+    general **"filtering"** entry — the *filtrage* tooltip now explains Betaflight
+    filtering as a whole (why and how), not just the gyro lowpass.
+  - the multi-pass overlay hint moved next to each axis' pass pills; removed the
+    redundant single/multi-pass pin note and the add-a-pass tip.
+- Refreshed the live example report (`scripts/full_report.html`) and its screenshot.
+
 ## [0.6.1] — 2026-06-04
 
 ### Fixed
