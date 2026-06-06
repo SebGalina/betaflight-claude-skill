@@ -302,22 +302,44 @@ Once installed, just talk to Claude — no explicit invocation needed:
 
 > **Claude Code Pro / Max users:** Claude installs dependencies and runs the scripts automatically — no manual setup needed.
 
-For all other users (Free, Team, API, claude.ai web/desktop without an automated-run tier), install once from the repo root.
+For all other users (Free, Team, API, claude.ai web/desktop without an automated-run tier), follow the steps below.
 
-#### With uv (recommended)
+#### Step 1 — Install Python 3.10 or later
 
-The repo ships a `pyproject.toml`, so [uv](https://docs.astral.sh/uv/) handles everything automatically — no manual venv or install step:
+Go to [python.org/downloads](https://www.python.org/downloads/) and download the installer for your OS.
+
+**Windows:** run the installer and, on the first screen, check **"Add Python to PATH"** before clicking *Install Now*. Without this, `python` won't be found in the terminal.
+
+**macOS:** the `.pkg` installer from python.org adds Python to your path automatically.
+
+Verify the install:
 
 ```bash
-# Install uv if you don't have it
-pip install uv          # or: curl -Ls https://astral.sh/uv/install.sh | sh
+python --version   # should print Python 3.10.x or later
+```
 
-# Run any script — uv creates the venv and installs deps on first run
+#### Step 2 — Open a terminal
+
+**Windows:** press `Win + R`, type `powershell`, press Enter. A blue window opens — that's your terminal.
+
+**macOS:** press `Cmd + Space`, type `Terminal`, press Enter.
+
+#### Step 3 — Install uv and run the scripts
+
+In the terminal, install [uv](https://docs.astral.sh/uv/) (a fast Python package manager):
+
+```bash
+pip install uv
+```
+
+Then run any script — uv automatically installs the required libraries on the first run:
+
+```bash
 uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
 uv run python -m scripts.analyze_blackbox your_log.bbl --stats
 ```
 
-#### With venv + pip
+##### With venv + pip
 
 ```bash
 python -m venv .venv
