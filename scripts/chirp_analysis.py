@@ -1618,6 +1618,25 @@ GLOSSARY = {
               "If it feeds into the loop it causes vibration/heat. Treat it with filtering (a notch), "
               "NOT by changing PIDs — lowering gains to mask a resonance degrades handling for nothing.",
     },
+    "filtering": {
+        "fr": "Filtrage (Betaflight) : l'ensemble des filtres qui nettoient le signal du gyro AVANT que les "
+              "PID ne le voient, pour que la boucle ne réagisse pas au bruit (vibrations cadre/pales/moteurs). "
+              "Pourquoi : ce bruit, amplifié surtout par le terme D, repart dans les moteurs → ESC/moteurs qui "
+              "chauffent, et peut entretenir des oscillations. Comment, du plus ciblé au plus large : le RPM "
+              "filter (encoches calées sur le régime moteur via la télémétrie), le dynamic notch (encoches qui "
+              "pistent les résonances), puis les passe-bas gyro (LPF) et D-term qui rabotent tout le haut du "
+              "spectre. Le compromis central : plus on filtre, plus on enlève de bruit, mais chaque filtre "
+              "ajoute du retard de phase qui grignote la marge de stabilité — d'où la règle « filtrer juste ce "
+              "qu'il faut, et figer le filtrage AVANT de régler les PID ».",
+        "en": "Filtering (Betaflight): the set of filters that clean the gyro signal BEFORE the PIDs see it, so "
+              "the loop doesn't react to noise (frame/prop/motor vibration). Why: that noise, amplified mostly by "
+              "the D term, feeds back into the motors → hot ESCs/motors, and can sustain oscillation. How, from "
+              "most targeted to broadest: the RPM filter (notches locked to motor rpm via telemetry), the dynamic "
+              "notch (notches tracking resonances), then the gyro and D-term lowpasses (LPF) that shave the whole "
+              "top of the spectrum. The core trade-off: more filtering removes more noise, but every filter adds "
+              "phase lag that eats into the stability margin — hence the rule 'filter just enough, and freeze the "
+              "filtering BEFORE tuning the PIDs'.",
+    },
     "gyro_lpf": {
         "fr": "Gyro lowpass (LPF) : filtre passe-bas sur le signal du gyroscope, avant tout calcul PID. "
               "Il enlève le bruit haute fréquence (moteurs/vibrations). Trop bas, il ajoute du retard de "
@@ -1754,15 +1773,6 @@ STRINGS = {
                        "de {phase} qui grignote la {pm} : régler les gains avant d'avoir figé le filtrage donne "
                        "des PID qui ne tiendront plus ensuite. On nettoie donc le bruit et les {res} d'abord, "
                        "puis on monte les gains.",
-        "guide_single": "📍 <b>Passe unique.</b> Si ce log a été pris juste après un reflash, les PID et filtres "
-                        "sont probablement aux <b>valeurs par défaut</b> : c'est ton point de référence (baseline). "
-                        "Applique les pistes de l'<b>Étape 1 (Filtrage)</b>, refais un vol en <code>debug_mode="
-                        "CHIRP</code>, puis compare — et seulement ensuite l'<b>Étape 2 (PID)</b>.",
-        "guide_multi": "📍 <b>{n} passes accumulées.</b> Les courbes de l'Étape 2 superposent toutes les passes "
-                       "pour voir l'effet de tes changements (diffs de config en Étape 3). La passe la plus récente "
-                       "sert de référence pour les pistes ci-dessous.",
-        "guide_add": "➕ Pour ajouter une passe : modifie filtres/PID, refais un log chirp, puis relance "
-                     "<code>chirp_analysis.py nouveau.bbl --html report.html</code> — il s'ajoute à l'historique.",
         "cfg_init": "Réglages initiaux", "cfg_last": "Réglages — dernière passe", "cfg_sub": "(extraits du log)",
         "synth_h": "Lecture d'ensemble", "synth_intro": "D'après la dernière passe",
         "synth_evo": "Évolution depuis la passe 1",
@@ -1787,7 +1797,7 @@ STRINGS = {
         "mapex_cap": "Une raie qui MONTE en fréquence avec le gaz = harmonique moteur (à traiter par RPM filter / dyn_notch). "
                      "Une raie VERTICALE à fréquence fixe = résonance de cadre/pale (notch). Une bonne carte : plancher bas "
                      "et uniforme, sans raie franche.",
-        "step1_h": "Filtrage", "step1_sub": "— à régler en premier",
+        "step1_h": "Filtrage",
         "tmap_h": "Carte throttle × fréquence", "filt_h": "Pistes de filtrage",
         "tmap_none": "indisponible (ni rcCommand[3] ni motor loggés). Active le throttle/les moteurs en blackbox.",
         "noise_h": "Spectre de bruit gyro (PSD, dB)",
@@ -1798,8 +1808,8 @@ STRINGS = {
         "noise_cap_nounfilt": "{psd} — gyro filtré (gyroUnfilt absent du log). 0 dB = plancher de bruit.",
         "leg_raw": "brut (unfilt)", "leg_filt": "filtré (gyroADC)",
         "leg_floor": "plancher", "leg_resid": "résiduel (indicatif)", "leg_motor": "harmoniques moteur",
-        "step2_h": "PID", "step2_sub": "— après avoir figé le filtrage",
-        "spectro_h": "Balayage du chirp (spectrogramme)",
+        "step2_h": "PID",
+        "sanity_h": "Contrôle des mesures — balayage du chirp",
         "spectro_cap": "{sg} — gyro {ax} pendant le sweep. La diagonale qui monte = le chirp ; les bandes "
                        "horizontales = résonances qui s'allument quand le sweep les traverse.",
         "overlay": "Courbes superposées :",
@@ -1839,15 +1849,6 @@ STRINGS = {
         "guide_order": "<b>Recommended order:</b> set {filt} BEFORE {pid}. Every filter adds {phase} lag that "
                        "eats into the {pm}: tuning gains before the filtering is frozen gives PIDs that won't "
                        "hold afterwards. So clean up noise and {res} first, then raise the gains.",
-        "guide_single": "📍 <b>Single pass.</b> If this log was taken right after a reflash, the PIDs and filters "
-                        "are probably at their <b>defaults</b>: that's your baseline. Apply the <b>Step 1 "
-                        "(Filtering)</b> leads, re-fly in <code>debug_mode=CHIRP</code>, then compare — and only "
-                        "then <b>Step 2 (PID)</b>.",
-        "guide_multi": "📍 <b>{n} passes accumulated.</b> The Step 2 curves overlay every pass so you can see the "
-                       "effect of your changes (config diffs in Step 3). The most recent pass is the reference for "
-                       "the leads below.",
-        "guide_add": "➕ To add a pass: change filters/PID, re-fly a chirp log, then re-run "
-                     "<code>chirp_analysis.py new.bbl --html report.html</code> — it appends to the history.",
         "cfg_init": "Initial settings", "cfg_last": "Settings — latest pass", "cfg_sub": "(read from the log)",
         "synth_h": "Overview", "synth_intro": "Based on the latest pass",
         "synth_evo": "Change since pass 1",
@@ -1872,7 +1873,7 @@ STRINGS = {
         "mapex_cap": "A line that CLIMBS in frequency with throttle = a motor harmonic (handled by the RPM filter / "
                      "dyn_notch). A FIXED-frequency vertical line = a frame/prop resonance (notch). A good map: a low, "
                      "uniform floor with no sharp line.",
-        "step1_h": "Filtering", "step1_sub": "— set this first",
+        "step1_h": "Filtering",
         "tmap_h": "Throttle × frequency map", "filt_h": "Filtering leads",
         "tmap_none": "unavailable (neither rcCommand[3] nor motors logged). Enable throttle/motors in blackbox.",
         "noise_h": "Gyro noise spectrum (PSD, dB)",
@@ -1883,8 +1884,8 @@ STRINGS = {
         "noise_cap_nounfilt": "{psd} — filtered gyro (gyroUnfilt absent from the log). 0 dB = noise floor.",
         "leg_raw": "raw (unfilt)", "leg_filt": "filtered (gyroADC)",
         "leg_floor": "floor", "leg_resid": "residual (indicative)", "leg_motor": "motor harmonics",
-        "step2_h": "PID", "step2_sub": "— after the filtering is frozen",
-        "spectro_h": "Chirp sweep (spectrogram)",
+        "step2_h": "PID",
+        "sanity_h": "Measurement check — chirp sweep",
         "spectro_cap": "{sg} — {ax} gyro during the sweep. The rising diagonal = the chirp; horizontal "
                        "bands = resonances lighting up as the sweep crosses them.",
         "overlay": "Overlaid curves:",
@@ -1945,7 +1946,11 @@ def _html_report(report: dict, file_name: str) -> str:
      background:#13314e; border:1px solid #2f567d; border-radius:11px; padding:2px 10px; }}
   .banner-file {{ position:absolute; right:18px; bottom:13px; color:#8aa0b8; font-size:12px; }}
   h3 {{ font-size: 13px; color:#8893a5; margin:14px 0 4px; text-transform:uppercase; letter-spacing:.5px; }}
-  .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px 14px; margin-bottom:18px; background:#171b22; position:relative; }}
+  .axis {{ border:1px solid #2a2f3a; border-radius:8px; padding:12px 14px 12px 17px; margin-bottom:18px; background:#171b22; position:relative; }}
+  /* every block carries the same accent liseré: a vertical gradient #ff5b2e -> #2dd4ff */
+  .axis::before {{ content:''; position:absolute; left:0; top:0; bottom:0; width:3px;
+     border-radius:8px 0 0 8px; background:linear-gradient(180deg,#ff5b2e,#2dd4ff); }}
+  .sicon {{ margin-right:7px; font-size:.95em; }}
   .passpills {{ position:absolute; top:11px; right:13px; display:flex; gap:5px; flex-wrap:wrap; justify-content:flex-end; max-width:58%; }}
   .pillbtn {{ font:600 11px system-ui; background:#0d1016; border:1.5px solid; border-radius:11px; padding:1px 9px; cursor:pointer; }}
   .pillbtn.off {{ background:transparent; border-style:dashed; text-decoration:line-through; }}
@@ -1958,9 +1963,6 @@ def _html_report(report: dict, file_name: str) -> str:
   summary.collh2::-webkit-details-marker {{ display:none; }}
   summary.collh2::before {{ content:'▸ '; }}
   details[open] > summary.collh2::before {{ content:'▾ '; }}
-  .step {{ border-left:3px solid #4fc3f7; }}
-  .step.pid {{ border-left-color:#ffd479; }}
-  .step.cmp {{ border-left-color:#80cbc4; }}
   canvas {{ display:block; background:#0d1016; border-radius:4px; margin:6px 0; }}
   .diag {{ color:#c9d2e0; }} .diag li {{ margin:2px 0; }}
   .meta {{ color:#8893a5; font-size:12px; }}
@@ -1979,11 +1981,12 @@ def _html_report(report: dict, file_name: str) -> str:
   .scoremax {{ font-size:16px; font-weight:400; color:#8893a5; }}
   .scoregrade {{ font-size:26px; font-weight:700; color:#9ecbff; }}
   .scoredelta {{ font-size:14px; font-weight:600; }}
-  table.scoretab {{ border-collapse:collapse; font-size:12px; margin:4px 0; }}
-  table.scoretab td {{ padding:2px 10px 2px 0; color:#c2cad6; vertical-align:top; }}
+  table.scoretab {{ border-collapse:collapse; font-size:12px; margin:6px 0; }}
+  table.scoretab th, table.scoretab td {{ border:1px solid #2a2f3a; padding:3px 12px; }}
+  table.scoretab th {{ text-align:center; font-weight:600; white-space:nowrap; background:#1c2330; }}
+  table.scoretab td {{ color:#e6eaf2; text-align:center; }}
+  table.scoretab th:first-child, table.scoretab td:first-child {{ text-align:left; }}
   .scoreall {{ margin:2px 0 4px; font-size:12.5px; }} .scoreall span {{ font-weight:600; }}
-  .stepnum {{ display:inline-block; min-width:20px; height:20px; line-height:20px; text-align:center;
-             border-radius:50%; background:#28425c; color:#cfe3ff; font-weight:600; margin-right:6px; }}
   .term {{ border-bottom:1px dotted #6b7689; cursor:help; position:relative; }}
   .term:hover::after {{ content:attr(data-tip); position:absolute; left:0; top:1.5em; z-index:20;
      width:340px; white-space:normal; background:#0b0e13; color:#e6eaf2; border:1px solid #3a4150;
@@ -2008,10 +2011,13 @@ def _html_report(report: dict, file_name: str) -> str:
   .passleg label {{ display:inline-flex; align-items:center; gap:5px; margin:2px 16px 2px 0; cursor:pointer; }}
   .passleg input {{ accent-color:#9ecbff; cursor:pointer; }}
   .howto {{ font-size:12px; color:#aab4c4; margin:4px 0 2px; }}
-  .pipe {{ margin:6px 0 10px; line-height:2; }}
-  .pipe b {{ display:inline-block; background:#13314e; border:1px solid #2f567d; border-radius:10px;
-     padding:1px 9px; font:600 11px system-ui; color:#cfe6ff; white-space:nowrap; }}
-  .pipe .arr {{ color:#5a6b82; margin:0 3px; }}
+  /* sequence schematic: rectangular process nodes (flowchart/UML look), numbered, not header chips */
+  .pipe {{ margin:10px 0 12px; line-height:2.6; }}
+  .pipe b {{ display:inline-flex; align-items:center; gap:7px; vertical-align:middle;
+     background:#0f1721; border:1px solid #34506e; border-left:3px solid #4fc3f7; border-radius:4px;
+     padding:4px 11px; font:600 11px ui-monospace,Consolas,monospace; color:#d4e6fb; white-space:nowrap; }}
+  .pipe b .nidx {{ font:700 10px ui-monospace,Consolas,monospace; color:#5f7da0; }}
+  .pipe .arr {{ color:#3f6a93; margin:0 1px; font-size:14px; vertical-align:middle; }}
   .ptip {{ position:fixed; z-index:60; pointer-events:none; display:none; background:#0b0e13; color:#e6eaf2;
      border:1px solid #3a5a78; border-radius:5px; padding:3px 7px; font:11px ui-monospace,Consolas,monospace;
      box-shadow:0 4px 12px rgba(0,0,0,.55); }}
@@ -2389,24 +2395,22 @@ function render() {{
 
   // ---- Guide ----
   {{
-    const g=el('div','axis guide'); let s='<h2>'+T('guide_h')+'</h2>';
-    s+='<div class=pipe>'+T('pipe').split(' | ').map(x=>'<b>'+x+'</b>').join('<span class=arr>→</span>')+'</div>';
+    const g=el('div','axis guide'); let s='<h2><span class=sicon>🧭</span>'+T('guide_h')+'</h2>';
+    s+='<div class=pipe>'+T('pipe').split(' | ').map((x,i)=>'<b><span class=nidx>'+String(i+1).padStart(2,'0')+'</span>'+x+'</b>').join('<span class=arr>▸</span>')+'</div>';
     s+='<p>'+T('guide_order')
-        .replace('{{filt}}',tip('gyro_lpf','<b>'+T('w_filt')+'</b>'))
-        .replace('{{pid}}',tip('pid','<b>'+T('w_pid')+'</b>'))
+        .replace('{{filt}}',tip('filtering',T('w_filt')))
+        .replace('{{pid}}',tip('pid',T('w_pid')))
         .replace('{{phase}}',tip('phase',T('w_phase')))
         .replace('{{pm}}',tip('phase_margin',T('w_pm')))
         .replace('{{res}}',tip('resonance',T('w_res')))+'</p>';
-    s+='<p>'+(single ? T('guide_single') : T('guide_multi').replace('{{n}}',R.total_passes))+'</p>';
     s+='<p class=meta>'+T('guide_vsag')+'</p>';
-    s+='<p class=meta>'+T('guide_add')+'</p>';
     g.innerHTML=s; root.appendChild(g);
   }}
 
   // ---- TUNE score (composite 0-100 + delta vs previous pass: better/worse after a config change) ----
   if (PRI.tune_score && PRI.tune_score.overall!=null) {{
     const ts=PRI.tune_score;
-    const box=el('div','axis score'); let s='<h2>'+T('score_h')+'</h2>';
+    const box=el('div','axis score'); let s='<h2><span class=sicon>🎯</span>'+T('score_h')+'</h2>';
     let dtxt='';
     const prev=(PRIMARY>0 && PASSES[PRIMARY-1] && PASSES[PRIMARY-1].tune_score) ? PASSES[PRIMARY-1].tune_score : null;
     if (prev && prev.overall!=null) {{
@@ -2416,14 +2420,21 @@ function render() {{
     }}
     s+='<div class=scoreband><span class=scorebig>'+ts.overall.toFixed(0)+'<span class=scoremax>/100</span></span>'
      + '<span class=scoregrade>'+ts.grade+'</span>'+dtxt+'</div>';
+    // Per-axis detail as a table: one column per indicator. Labels (header) carry the indicator's
+    // colour + pictogram (same identity as the evolution tiles); values stay white, in their own cells.
     const SUBL={{overshoot:'overshoot', rise:T('sc_rise'), margin:T('sc_margin'), ms:'Ms', noise:T('sc_noise')}};
+    const subKeys=Object.keys(SUBL).filter(k=>Object.keys(ts.axes).some(ax=>ts.axes[ax].subs[k]!=null));
+    let head='<tr><th></th><th style="color:#9ecbff">'+T('score_h')+'</th>';
+    for (const k of subKeys) head+='<th style="color:'+IND[k].c+'">'+IND[k].p+' '+SUBL[k]+'</th>';
+    head+='</tr>';
     let rows='';
     for (const ax of Object.keys(ts.axes)) {{
       const a=ts.axes[ax];
-      const sub=Object.keys(SUBL).filter(k=>a.subs[k]!=null).map(k=>'<span style="color:'+IND[k].c+'">'+IND[k].p+' '+SUBL[k]+' '+a.subs[k]+'</span>').join('  ');
-      rows+='<tr><td><b>'+ax+'</b></td><td><b style="color:#9ecbff">'+a.score.toFixed(0)+'</b></td><td>'+sub+'</td></tr>';
+      rows+='<tr><td><b>'+ax+'</b></td><td><b style="color:#9ecbff">'+a.score.toFixed(0)+'</b></td>';
+      for (const k of subKeys) rows+='<td>'+(a.subs[k]!=null?a.subs[k]:'—')+'</td>';
+      rows+='</tr>';
     }}
-    s+='<table class=scoretab>'+rows+'</table>';
+    s+='<table class=scoretab>'+head+rows+'</table>';
     // every pass's overall score (small), with a star on the best — the comparative view at a glance
     const scored=PASSES.map((p,i)=>({{n:p.n, i:i, v:(p.tune_score&&p.tune_score.overall)}})).filter(o=>o.v!=null);
     if (scored.length>1) {{
@@ -2458,7 +2469,7 @@ function render() {{
     const ord=['roll','pitch','yaw']; axesSet.sort((a,b)=>ord.indexOf(a)-ord.indexOf(b));
     if (axesSet.length) {{
       const box=el('div','axis'); root.appendChild(box);
-      box.appendChild(el('h2',null,T('evo_h')));
+      box.appendChild(el('h2',null,'<span class=sicon>📈</span>'+T('evo_h')));
       box.appendChild(el('div','meta',T('evo_cap')));
       const mw=Math.max(170, Math.min(260, Math.floor((W-30)/3)-10)), mh=128;
       const ptsFor=(axis,g,r)=>PASSES.map(p=>{{ const d=(p.axes||{{}})[axis]; const v=d?g(d):null; const rg=d?r(d):null;
@@ -2489,7 +2500,7 @@ function render() {{
     const ref=PASSES.map(p=>cfgFields(p.config||{{}})).filter(a=>a.length).slice(-1)[0]||[];
     if (ref.length) {{
       const box=el('div','axis step cmp'); root.appendChild(box);
-      box.appendChild(el('h2',null,T('cmp_h')));
+      box.appendChild(el('h2',null,'<span class=sicon>🔀</span>'+T('cmp_h')));
       let changedAny=false, t='<table class=cmp><tr><th></th>';
       PASSES.forEach((p,i)=>{{ t+='<th><span class=swatch style="background:'+PAL[i%PAL.length]+'"></span><span class="passtip" data-pass="'+i+'">'+T('pass_word')+' '+p.n+'</span></th>'; }});
       t+='</tr>';
@@ -2507,10 +2518,44 @@ function render() {{
     }}
   }}
 
+  // ---- Sanity check: chirp sweep spectrogram (first — confirms the measurement actually swept the
+  //      whole band before any tuning read; its own cadre, ahead of Filtering) ----
+  {{
+    const sg=PRI.spectrogram;
+    if (sg && sg.levels_db && sg.levels_db.length) {{
+      const box=el('div','axis'); root.appendChild(box);
+      box.appendChild(el('h2',null,'<span class=sicon>🔍</span>'+tip('spectrogram',T('sanity_h'))+' <span class=meta>('+sg.axis+' gyro)</span>'));
+      const rows=sg.levels_db.length, cols=sg.levels_db[0].length;
+      const cw=W-PAD-12, Hs=Math.max(220,rows*1.6), cellW=cw/cols, cellH=(Hs-30)/rows;
+      const ctx=mkCanvas(box,Hs).getContext('2d'); ctx.clearRect(0,0,W,Hs);
+      const lo=-28, hi=0;   // fixed window for contrast: cells within 28 dB of each column's max
+      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {{
+        const v=sg.levels_db[r][c]; const tn=Math.max(0,Math.min(1,(v-lo)/((hi-lo)||1)));
+        ctx.fillStyle='rgb('+Math.round(255*Math.min(1,tn*1.6))+','+Math.round(150*Math.max(0,1-Math.abs(tn-0.55)*2))+','+Math.round(255*(1-tn))+')';
+        ctx.fillRect(PAD+c*cellW, 8+(rows-1-r)*cellH, cellW+1, cellH+1);
+      }}
+      ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
+      // log frequency axis: decade ticks (1/2/5) placed by log position
+      const fmn=sg.freqs[0], fmx=sg.freqs[sg.freqs.length-1];
+      const lyy=fv=>8+(1-(Math.log10(fv)-Math.log10(fmn))/(Math.log10(fmx)-Math.log10(fmn)))*(Hs-30);
+      for (let d=Math.floor(Math.log10(fmn)); d<=Math.ceil(Math.log10(fmx)); d++) for (const mm of [1,2,5]) {{
+        const fv=mm*Math.pow(10,d); if (fv<fmn||fv>fmx) continue;
+        ctx.fillText(fv>=1000?(fv/1000)+'k':fv, 4, lyy(fv)+3); }}
+      const tmaxS=sg.t_s[sg.t_s.length-1]-sg.t_s[0];
+      for (let k=0;k<=5;k++) {{ const x=PAD+k/5*cw; ctx.fillText((tmaxS*k/5).toFixed(1)+(k===5?' s':''), x-6, Hs-6); }}
+      ctx.fillStyle='#9ecbff'; ctx.fillText('freq (Hz) ↑   temps →', PAD, Hs-18);
+      let scap=T('spectro_cap').replace('{{sg}}',tip('spectrogram','spectrogramme')).replace('{{ax}}',sg.axis);
+      if (sg.n_sweeps) scap+=' '+(LANG==='fr'
+        ? 'Médiane de '+sg.n_sweeps+' sweeps (alignés sur le temps relatif) — la crête est plus nette, le bruit inter-sweeps moyenné.'
+        : 'Median of '+sg.n_sweeps+' sweeps (aligned on relative time) — sharper ridge, inter-sweep noise averaged out.');
+      box.appendChild(el('div','legend',scap));
+    }}
+  }}
+
   // ---- Step 1: Filtering ----
   {{
     const box=el('div','axis step'); root.appendChild(box);
-    box.appendChild(el('h2',null,'<span class=stepnum>1</span>'+tip('gyro_lpf',T('step1_h'))+' '+T('step1_sub')));
+    box.appendChild(el('h2',null,'<span class=sicon>🧹</span>'+tip('filtering',T('step1_h'))));
     const tm=PRI.throttle_map;
     if (tm && tm.freqs && tm.freqs.length) {{
       box.appendChild(el('h3',null,tip('throttle_map',T('tmap_h'))+' ('+tm.axis+' gyro · '+(tm.source||'?')+')'
@@ -2606,41 +2651,8 @@ function render() {{
     s+='</ul></details>'; box.appendChild(el('div',null,s));
   }}
 
-  // ---- Step 2: PID (Bode + step response, all passes overlaid) ----
-  {{
-    const head=el('div','axis step pid'); root.appendChild(head);
-    head.appendChild(el('h2',null,'<span class=stepnum>2</span>'+tip('pid',T('step2_h'))+' '+T('step2_sub')));
-    if (!single) head.appendChild(el('div','meta',T('overlay')+' <i>('+T('overlay_hint')+')</i>'));
-    // chirp spectrogram (primary pass): the rising sweep + resonances as horizontal bands
-    const sg=PRI.spectrogram;
-    if (sg && sg.levels_db && sg.levels_db.length) {{
-      head.appendChild(el('h3',null,tip('spectrogram',T('spectro_h'))+' ('+sg.axis+' gyro)'));
-      const rows=sg.levels_db.length, cols=sg.levels_db[0].length;
-      const cw=W-PAD-12, Hs=Math.max(220,rows*1.6), cellW=cw/cols, cellH=(Hs-30)/rows;
-      const ctx=mkCanvas(head,Hs).getContext('2d'); ctx.clearRect(0,0,W,Hs);
-      const lo=-28, hi=0;   // fixed window for contrast: cells within 28 dB of each column's max
-      for (let r=0;r<rows;r++) for (let c=0;c<cols;c++) {{
-        const v=sg.levels_db[r][c]; const tn=Math.max(0,Math.min(1,(v-lo)/((hi-lo)||1)));
-        ctx.fillStyle='rgb('+Math.round(255*Math.min(1,tn*1.6))+','+Math.round(150*Math.max(0,1-Math.abs(tn-0.55)*2))+','+Math.round(255*(1-tn))+')';
-        ctx.fillRect(PAD+c*cellW, 8+(rows-1-r)*cellH, cellW+1, cellH+1);
-      }}
-      ctx.fillStyle='#8893a5'; ctx.font='10px sans-serif';
-      // log frequency axis: decade ticks (1/2/5) placed by log position
-      const fmn=sg.freqs[0], fmx=sg.freqs[sg.freqs.length-1];
-      const lyy=fv=>8+(1-(Math.log10(fv)-Math.log10(fmn))/(Math.log10(fmx)-Math.log10(fmn)))*(Hs-30);
-      for (let d=Math.floor(Math.log10(fmn)); d<=Math.ceil(Math.log10(fmx)); d++) for (const mm of [1,2,5]) {{
-        const fv=mm*Math.pow(10,d); if (fv<fmn||fv>fmx) continue;
-        ctx.fillText(fv>=1000?(fv/1000)+'k':fv, 4, lyy(fv)+3); }}
-      const tmaxS=sg.t_s[sg.t_s.length-1]-sg.t_s[0];
-      for (let k=0;k<=5;k++) {{ const x=PAD+k/5*cw; ctx.fillText((tmaxS*k/5).toFixed(1)+(k===5?' s':''), x-6, Hs-6); }}
-      ctx.fillStyle='#9ecbff'; ctx.fillText('freq (Hz) ↑   temps →', PAD, Hs-18);
-      let scap=T('spectro_cap').replace('{{sg}}',tip('spectrogram','spectrogramme')).replace('{{ax}}',sg.axis);
-      if (sg.n_sweeps) scap+=' '+(LANG==='fr'
-        ? 'Médiane de '+sg.n_sweeps+' sweeps (alignés sur le temps relatif) — la crête est plus nette, le bruit inter-sweeps moyenné.'
-        : 'Median of '+sg.n_sweeps+' sweeps (aligned on relative time) — sharper ridge, inter-sweep noise averaged out.');
-      head.appendChild(el('div','legend',scap));
-    }}
-  }}
+  // ---- PID per axis (Bode + step response, all passes overlaid). No standalone section header:
+  //      each axis block ("PID Roll/Pitch/Yaw") is its own cadre. ----
   for (const axis of Object.keys(PRI.axes||{{}})) {{
     const d=PRI.axes[axis]; if(!d||!d.freq) continue;
     const box=el('div','axis'); root.appendChild(box);
@@ -2657,7 +2669,8 @@ function render() {{
     }} else {{
       mtxt = m==null ? T('no_xover') : (tip('phase_margin',T('margin'))+' '+m.toFixed(0)+'°'+(mu?(' ±'+mu.toFixed(0)+'°'):'')+' @ '+(fco?fco.toFixed(0):'?')+' Hz');
     }}
-    box.appendChild(el('h2',null,axis.toUpperCase()+' <span class=meta>['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz] — '+mtxt+'</span>'));
+    box.appendChild(el('h2',null,'<span class=sicon>🎛️</span>PID '+axis.charAt(0).toUpperCase()+axis.slice(1)+' <span class=meta>['+d.band_hz[0]+'–'+d.band_hz[1]+' Hz] — '+mtxt+'</span>'));
+    if (!single) box.appendChild(el('div','meta',T('overlay')+' <i>('+T('overlay_hint')+')</i>'));
     const pills=passPills(); if (pills) box.appendChild(pills);
     const fmin=d.band_hz[0]||1, fmax=d.band_hz[1]||500;
     const ser=PASSES.map((p,i)=>({{p:p.axes&&p.axes[axis], i:i, primary:i===PRIMARY}})).filter(o=>o.p&&o.p.freq&&!HIDDEN.has(o.i));
@@ -2747,12 +2760,15 @@ function render() {{
   // ---- Glossary ----
   {{
     const order=['chirp','gain','phase','sensitivity','phase_margin','crossover','coherence','resonance',
-      'noise_psd','motor_harmonics','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','spectrogram','step_response','propwash'];
+      'noise_psd','motor_harmonics','filtering','gyro_lpf','dterm_lpf','dyn_notch','rpm_filter','dmax','pid','throttle_map','spectrogram','step_response','propwash'];
     const box=el('div','axis'); root.appendChild(box);
-    let s='<details class="coll"><summary class="collh2">'+T('glossary_h')+'</summary><dl class=glos>';
+    let s='<details class="coll"><summary class="collh2"><span class=sicon>📖</span>'+T('glossary_h')+'</summary><dl class=glos>';
+    // entries sorted alphanumerically by their displayed term name (in the active language)
+    const entries=[];
     for (const k of order) {{ const g=GL[k]; if (g && (g[LANG]||g.fr)) {{
-      const head=(g[LANG]||g.fr).split(/ : | — |: /)[0];
-      s+='<dt>'+head+'</dt><dd>'+(g[LANG]||g.fr)+'</dd>'; }} }}
+      const txt=(g[LANG]||g.fr); entries.push({{head:txt.split(/ : | — |: /)[0], txt:txt}}); }} }}
+    entries.sort((a,b)=>a.head.localeCompare(b.head, LANG, {{numeric:true, sensitivity:'base'}}));
+    for (const e of entries) s+='<dt>'+e.head+'</dt><dd>'+e.txt+'</dd>';
     s+='</dl></details>'; box.innerHTML=s;
   }}
 }}

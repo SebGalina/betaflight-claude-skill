@@ -160,13 +160,14 @@ The newest log on the line is the **reference pass** (it carries the tune score 
 
 **Asking Claude (skill) to do it** — no command needed, just say so; trigger keywords: *chirp*, *tuning report*, *Bode / frequency response*, *step response*, *before/after tune*, *analyse mon log chirp*, *compare these chirp logs*.
 
-The HTML opens offline (no external dependencies) and is a **bilingual (FR/EN, live toggle) guided assistant** ordered **Filtering → PID → History**:
+The HTML opens offline (no external dependencies) and is a **bilingual (FR/EN, live toggle) guided assistant**. It opens with a **tuning guide** — the analysis pipeline drawn as a numbered sequence diagram — then runs **sanity-check → Filtering → PID → History**:
 
-- a composite **tune score** (0–100 + grade) per axis and overall, with the **delta vs the previous pass** and a per-pass scoreboard (★ on the best) — at-a-glance, is this config better or worse than the last;
+- a composite **tune score** (0–100 + grade) overall, with the **delta vs the previous pass**, a per-pass scoreboard (★ on the best), and a **per-axis breakdown table** (overshoot / rise / margin / Ms / noise, each header colour-coded by indicator) — at-a-glance, is this config better or worse than the last;
 - a **per-axis indicator evolution** panel across passes (overshoot, rise, settle, guaranteed margin, f(Ms), Ms) — each indicator with a colour + pictogram reused everywhere;
-- per-axis **Bode** (gain dB / phase deg / coherence) + **step response** (with a zoomed inset on the overshoot), the guaranteed phase margin, and **inter-sweep repeatability bands** when a log holds several chirps on an axis;
+- a **chirp spectrogram** shown first as a **measurement sanity-check**: the rising sweep on a log axis confirms the chirp actually swept the whole band before anything is read off it;
+- per-axis **Bode** (gain dB / phase deg / coherence) + **step response** (with a zoomed inset on the overshoot) under **PID Roll / Pitch / Yaw** cadres, the guaranteed phase margin, and **inter-sweep repeatability bands** when a log holds several chirps on an axis;
 - a **gyro noise spectrum** (raw vs filtered) with **motor harmonics located from eRPM**, the current filter cut-offs drawn on it, and which filters could be loosened or disabled;
-- a **chirp spectrogram** (the rising sweep on a log axis), a throttle × frequency resonance map, and a **multi-pass overlay** with an exhaustive settings-comparison table + per-pass config tooltips for before/after;
+- a throttle × frequency resonance map and a **multi-pass overlay** with an exhaustive settings-comparison table + per-pass config tooltips for before/after;
 - plain-language **observations** read directly from the PID/filter settings in the log — fully deterministic (no LLM), so the same log always gives the same report.
 
 The firmware debug mapping is auto-detected (current BF logs only `debug[0]`; the legacy `debug[1..3]` path is kept as a fallback). `--json` is machine-readable; `--history`/`--no-history` control the accumulated history. See `references/chirp-tuning.md`.
