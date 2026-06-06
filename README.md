@@ -56,6 +56,85 @@ git clone https://github.com/SebGalina/betaflight-claude-skill.git .claude/skill
 
 Upload via the Skills API — see the [official guide](https://platform.claude.com/docs/en/build-with-claude/skills-guide).
 
+## Running the scripts manually
+
+### Python dependencies
+
+> **Claude Code Pro / Max users:** Claude installs dependencies and runs the scripts automatically — no manual setup needed.
+
+For all other users (Free, Team, API, claude.ai web/desktop without an automated-run tier), follow the steps below.
+
+#### Step 1 — Install Python 3.10 or later
+
+Go to [python.org/downloads](https://www.python.org/downloads/) and download the installer for your OS.
+
+**Windows:** run the installer and, on the first screen, check **"Add Python to PATH"** before clicking *Install Now*. Without this, `python` won't be found in the terminal.
+
+**macOS:** the `.pkg` installer from python.org adds Python to your path automatically.
+
+Verify the install:
+
+```bash
+python --version   # should print Python 3.10.x or later
+```
+
+#### Step 2 — Open a terminal
+
+**Windows:** press `Win + R`, type `powershell`, press Enter. A blue window opens — that's your terminal.
+
+**macOS:** press `Cmd + Space`, type `Terminal`, press Enter.
+
+#### Step 3 — Install uv and run the scripts
+
+In the terminal, install [uv](https://docs.astral.sh/uv/) (a fast Python package manager):
+
+```bash
+pip install uv
+```
+
+Then run any script — uv automatically installs the required libraries on the first run:
+
+```bash
+uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
+uv run python -m scripts.analyze_blackbox your_log.bbl --stats
+```
+
+##### With venv + pip
+
+```bash
+python -m venv .venv
+
+# Activate (macOS / Linux)
+source .venv/bin/activate
+
+# Activate (Windows)
+.venv\Scripts\activate
+
+# Install — choose one:
+pip install -r requirements.txt   # full (all scripts + eval runner)
+pip install numpy pandas scipy    # scripts only
+pip install anthropic python-dotenv  # eval runner only
+```
+
+After activation, use `python -m scripts.<name>` as shown below. Re-activate the venv in each new terminal session.
+
+`fetch_presets.py`, `parse_diff.py`, `validate_config.py`, and `selftest.py` use the standard library only — no install needed.
+
+**Python 3.10+ required** (the scripts use `X | Y` union type syntax).
+
+### Commands
+
+```bash
+python -m scripts.parse_diff evals/sample_diff.txt
+python -m scripts.validate_config evals/sample_diff.txt
+python -m scripts.analyze_blackbox your_log.bbl --stats
+python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
+python -m scripts.spectral_analysis your_log.bbl
+python -m scripts.chirp_analysis your_log.bbl --html report.html
+python -m scripts.selftest                      # stdlib-only smoke test
+python -m scripts.run_evals --ids 1 2 3
+```
+
 ## Chirp analysis → guided tuning report
 
 [![Example chirp tuning report — click for the live HTML](assets/Betaflight-claude-skill_scripts_full_report.png)](https://raw.githack.com/SebGalina/betaflight-claude-skill/main/scripts/full_report.html)
@@ -295,85 +374,6 @@ Once installed, just talk to Claude — no explicit invocation needed:
 > "J'ai acheté mon premier drone, configure-le de zéro." *(launches the setup wizard)*
 
 > "Mon FC est branché — lis mes PIDs et dis-moi si c'est correct pour un 5\" freestyle." *(live MCP read)*
-
-## Running the scripts manually
-
-### Python dependencies
-
-> **Claude Code Pro / Max users:** Claude installs dependencies and runs the scripts automatically — no manual setup needed.
-
-For all other users (Free, Team, API, claude.ai web/desktop without an automated-run tier), follow the steps below.
-
-#### Step 1 — Install Python 3.10 or later
-
-Go to [python.org/downloads](https://www.python.org/downloads/) and download the installer for your OS.
-
-**Windows:** run the installer and, on the first screen, check **"Add Python to PATH"** before clicking *Install Now*. Without this, `python` won't be found in the terminal.
-
-**macOS:** the `.pkg` installer from python.org adds Python to your path automatically.
-
-Verify the install:
-
-```bash
-python --version   # should print Python 3.10.x or later
-```
-
-#### Step 2 — Open a terminal
-
-**Windows:** press `Win + R`, type `powershell`, press Enter. A blue window opens — that's your terminal.
-
-**macOS:** press `Cmd + Space`, type `Terminal`, press Enter.
-
-#### Step 3 — Install uv and run the scripts
-
-In the terminal, install [uv](https://docs.astral.sh/uv/) (a fast Python package manager):
-
-```bash
-pip install uv
-```
-
-Then run any script — uv automatically installs the required libraries on the first run:
-
-```bash
-uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
-uv run python -m scripts.analyze_blackbox your_log.bbl --stats
-```
-
-##### With venv + pip
-
-```bash
-python -m venv .venv
-
-# Activate (macOS / Linux)
-source .venv/bin/activate
-
-# Activate (Windows)
-.venv\Scripts\activate
-
-# Install — choose one:
-pip install -r requirements.txt   # full (all scripts + eval runner)
-pip install numpy pandas scipy    # scripts only
-pip install anthropic python-dotenv  # eval runner only
-```
-
-After activation, use `python -m scripts.<name>` as shown below. Re-activate the venv in each new terminal session.
-
-`fetch_presets.py`, `parse_diff.py`, `validate_config.py`, and `selftest.py` use the standard library only — no install needed.
-
-**Python 3.10+ required** (the scripts use `X | Y` union type syntax).
-
-### Commands
-
-```bash
-python -m scripts.parse_diff evals/sample_diff.txt
-python -m scripts.validate_config evals/sample_diff.txt
-python -m scripts.analyze_blackbox your_log.bbl --stats
-python -m scripts.step_response your_log.bbl --bandpass --active-only --plot
-python -m scripts.spectral_analysis your_log.bbl
-python -m scripts.chirp_analysis your_log.bbl --html report.html
-python -m scripts.selftest                      # stdlib-only smoke test
-python -m scripts.run_evals --ids 1 2 3
-```
 
 ## Limitations
 
