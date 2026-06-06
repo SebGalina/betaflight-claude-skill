@@ -1,4 +1,5 @@
-# analyze_blackbox.py --stats / --csv, and step_response.py, blackbox_signal.py, chirp_analysis.py
+# pip fallback — canonical source of truth is pyproject.toml
+# regenerate with: uv export --format requirements-txt > requirements.txt
 numpy>=1.24.0
 pandas>=2.0.0
 scipy>=1.10.0

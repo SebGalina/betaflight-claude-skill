@@ -306,17 +306,13 @@ For all other users (Free, Team, API, claude.ai web/desktop without an automated
 
 #### With uv (recommended)
 
-[uv](https://docs.astral.sh/uv/) is significantly faster than pip and handles the venv for you:
+The repo ships a `pyproject.toml`, so [uv](https://docs.astral.sh/uv/) handles everything automatically — no manual venv or install step:
 
 ```bash
 # Install uv if you don't have it
 pip install uv          # or: curl -Ls https://astral.sh/uv/install.sh | sh
 
-# One-time setup
-uv venv
-uv pip install -r requirements.txt   # or a subset: uv pip install numpy pandas scipy
-
-# Run any script — no activation needed
+# Run any script — uv creates the venv and installs deps on first run
 uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
 uv run python -m scripts.analyze_blackbox your_log.bbl --stats
 ```
