@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import sys
 import zipfile
@@ -33,6 +34,14 @@ SCRIPT_EXCLUDE = {
     "selftest.py",         # dev: smoke test
     "build_skill_zip.py",  # dev: this builder
 }
+
+# Vendored compute core: betaflight-chirp-core is the single source of truth
+# (separate public repo). The sandbox cannot pip-install, so the package is
+# copied into scripts/ at build time, next to chirp_analysis.py (which adds its
+# own dir to sys.path and imports `betaflight_chirp_core`). Override the source
+# checkout with CORE_REPO_PATH; default is a sibling clone of this repo.
+CORE_PKG = "betaflight_chirp_core"
+CORE_REPO = Path(os.environ.get("CORE_REPO_PATH", ROOT.parent / "betaflight-chirp-core")).resolve()
 
 
 def read_version() -> str:
@@ -62,6 +71,16 @@ def collect() -> list[tuple[Path, str]]:
         if p.name in SCRIPT_EXCLUDE:
             continue
         items.append((p, f"{SKILL_DIRNAME}/scripts/{p.name}"))
+
+    # Vendor the compute core into scripts/betaflight_chirp_core/.
+    core_pkg_dir = CORE_REPO / CORE_PKG
+    if not core_pkg_dir.is_dir():
+        sys.exit(f"vendored core not found at {core_pkg_dir}\n"
+                 f"clone betaflight-chirp-core next to this repo, or set CORE_REPO_PATH")
+    for p in sorted(core_pkg_dir.rglob("*")):
+        if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc":
+            rel = p.relative_to(CORE_REPO).as_posix()  # betaflight_chirp_core/...
+            items.append((p, f"{SKILL_DIRNAME}/scripts/{rel}"))
 
     return items
 
