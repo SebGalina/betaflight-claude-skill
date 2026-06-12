@@ -16,27 +16,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # build_skill_zip.py vendors the compute core into the zip, so the core
-      # repo must be present. Resolve the pinned tag straight from pyproject.toml
-      # (the `betaflight-chirp-core @ git+...@<tag>` dependency) so CI always
-      # vendors exactly the declared version — no drift to keep in sync here.
-      - name: Resolve pinned core ref
-        id: core
-        run: |
-          REF="$(grep -oP 'betaflight-chirp-core @ git\+[^@]+@\K[^"]+' pyproject.toml)"
-          echo "Pinned betaflight-chirp-core ref: $REF"
-          echo "ref=$REF" >> "$GITHUB_OUTPUT"
-
-      - name: Check out betaflight-chirp-core
-        uses: actions/checkout@v4
-        with:
-          repository: SebGalina/betaflight-chirp-core
-          ref: ${{ steps.core.outputs.ref }}
-          path: core
-
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      # build_skill_zip.py vendors the compute core into the zip. Install it
+      # from PyPI into ./core (source only, --no-deps) at the version pinned in
+      # pyproject.toml, then point the builder at it via CORE_REPO_PATH — CI
+      # always vendors exactly the declared version, nothing to keep in sync.
+      - name: Vendor betaflight-chirp-core from PyPI
+        run: |
+          VER="$(grep -oP 'betaflight-chirp-core==\K[0-9.]+' pyproject.toml)"
+          echo "Pinned betaflight-chirp-core: $VER"
+          pip install --target core --no-deps "betaflight-chirp-core==$VER"
 
       - name: Build skill zip
         env:

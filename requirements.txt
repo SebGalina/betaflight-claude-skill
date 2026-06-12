@@ -5,8 +5,7 @@ pandas>=2.0.0
 scipy>=1.10.0
 
 # compute core — the single source of truth (decoder + chirp/step/spectral + HTML report).
-# installs from git, so `git` must be on PATH.
-betaflight-chirp-core @ git+https://github.com/SebGalina/betaflight-chirp-core@v0.1.4
+betaflight-chirp-core==0.1.6
 
 # run_evals.py
 anthropic>=0.40.0

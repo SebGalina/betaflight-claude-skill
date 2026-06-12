@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Bump bundled `betaflight-chirp-core` to **0.1.6** and pin it from **PyPI**
+  (`betaflight-chirp-core==0.1.6`) instead of `git+https`. Manual runs no longer
+  need `git` on PATH; the release workflow vendors the package via
+  `pip install --target` from PyPI. Core 0.1.4→0.1.6 is docs/packaging only — the
+  public API and report renderer are unchanged, so the skill wrappers are untouched.
+
 ## [0.8.0] — 2026-06-12
 
 ### Changed
