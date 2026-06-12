@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-12
+
 ### Changed
 - **Compute core extracted to `betaflight-chirp-core`** (new public package, the
   single source of truth shared with the FPVLogForge backend). The blackbox decode,
@@ -17,6 +19,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pip-install), so behaviour is unchanged — outputs verified byte-for-byte against
   the previous scripts. Bundles `betaflight-chirp-core` **v0.1.4** (shared,
   mountable HTML report renderer assets under `report_assets/`).
+- `betaflight-chirp-core` is now declared in `requirements.txt` and `pyproject.toml`
+  (pinned `@v0.1.4`) so a plain `git clone` + `pip install -r requirements.txt` /
+  `uv run` can run the analysis scripts; `README.md` and `SKILL.md` updated to describe
+  the wrapper-over-core architecture (decoder/signal helpers now live in the core).
 
 ### Removed
 - `blackbox_decoder.py` and `blackbox_signal.py` — replaced by the vendored
