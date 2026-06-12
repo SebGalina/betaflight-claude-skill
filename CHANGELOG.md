@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-06-12
+
 ### Changed
 - **Compute core extracted to `betaflight-chirp-core`** (new public package, the
   single source of truth shared with the FPVLogForge backend). The blackbox decode,
