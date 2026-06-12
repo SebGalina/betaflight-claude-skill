@@ -6,6 +6,7 @@ dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",
     "scipy>=1.10.0",
+    "betaflight-chirp-core @ git+https://github.com/SebGalina/betaflight-chirp-core@v0.1.4",
     "anthropic>=0.40.0",
     "python-dotenv>=1.0.0",
 ]
