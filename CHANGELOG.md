@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Compute core extracted to `betaflight-chirp-core`** (new public package, the
+  single source of truth shared with the FPVLogForge backend). The blackbox decode,
+  chirp FRF/Bode, step response, spectral noise analysis and the self-contained HTML
+  report now live there; `chirp_analysis.py`, `spectral_analysis.py`,
+  `step_response.py` and `analyze_blackbox.py` are now thin CLI wrappers over it.
+  `build_skill_zip.py` vendors the package into the zip (the sandbox cannot
+  pip-install), so behaviour is unchanged — outputs verified byte-for-byte against
+  the previous scripts. Bundles `betaflight-chirp-core` **v0.1.4** (shared,
+  mountable HTML report renderer assets under `report_assets/`).
+
+### Removed
+- `blackbox_decoder.py` and `blackbox_signal.py` — replaced by the vendored
+  `betaflight_chirp_core` (decoder + signal helpers).
+
 ## [0.7.0] — 2026-06-06
 
 ### Changed

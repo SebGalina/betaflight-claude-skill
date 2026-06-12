@@ -15,7 +15,6 @@ import sys
 from pathlib import Path
 
 from scripts import analyze_blackbox as ab
-from scripts import blackbox_signal as bbs
 from scripts import parse_diff, validate_config
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -76,10 +75,11 @@ def test_chirp() -> bool:
     if not log.exists():
         print("  [SKIP] no chirp fixture (scripts/test/btfl_chirp.bbl)")
         return True
-    from scripts import chirp_analysis as ca
+    from betaflight_chirp_core import decode
+    from betaflight_chirp_core.analysis import chirp
 
-    df = bbs.load_dataframe(log)
-    results, _tmap, _noise, _spectro = ca.analyse(df, ca._sample_rate(df), ca.DEFAULT_INPUT_COL)
+    df, fs, _ = decode(log.read_bytes())
+    results, _tmap, _noise, _spectro = chirp.analyse(df, fs, chirp.DEFAULT_INPUT_COL)
     ok = _check("axes analysed", len(results) >= 1, f"{len(results)} axes")
     ok &= _check(
         "phase margin read",
@@ -104,8 +104,8 @@ def test_analysers_smoke() -> bool:
         print("  [SKIP] numpy/pandas/scipy not installed")
         return True
 
-    from scripts import spectral_analysis as sa
-    from scripts import step_response as sr
+    from betaflight_chirp_core import signal
+    from betaflight_chirp_core.analysis import spectral, step
 
     fs, n, f_tone = 2000.0, 8000, 220.0
     t = np.arange(n) / fs
@@ -120,49 +120,16 @@ def test_analysers_smoke() -> bool:
         "rcCommand[3]": np.full(n, 1500),
     })
 
-    ok = _check("synthetic sample rate ~2000 Hz", round(bbs.sample_rate(df)) == 2000)
+    ok = _check("synthetic sample rate ~2000 Hz", round(signal.sample_rate(df)) == 2000)
 
-    spec = sa.analyse(df, bbs.sample_rate(df), "gyro", ["roll"])
+    spec = spectral.analyse(df, signal.sample_rate(df), "gyro", ["roll"])
     peaks = [p["freq_hz"] for p in spec.get("roll", {}).get("peaks", [])]
     ok &= _check("spectral finds the 220 Hz tone",
                  any(abs(f - f_tone) < 10 for f in peaks),
                  f"peaks={[round(f) for f in peaks]}")
 
-    step = sr.analyse(df, bbs.sample_rate(df), ["roll"])
-    ok &= _check("step_response returns the roll axis", "roll" in step)
-    return ok
-
-
-def test_decoder_equivalence() -> bool:
-    """In-process decode == subprocess CSV decode (regression guard for the fast path).
-
-    Runs only when a local .bbl fixture is present (git-ignored). Asserts the
-    in-process `decode_dataframe` yields the same columns and row count as the
-    proven `analyze_blackbox --csv` round-trip.
-    """
-    print("blackbox_signal — in-process vs subprocess decode (scripts/test/*.bbl)")
-    try:
-        import pandas  # noqa: F401
-    except ImportError:
-        print("  [SKIP] pandas not installed")
-        return True
-    logs = sorted(BBL_DIR.glob("*.bbl")) if BBL_DIR.exists() else []
-    if not logs:
-        print("  [SKIP] no local .bbl fixtures (see scripts/test/README.md)")
-        return True
-    ok = True
-    for log in logs:
-        fast = bbs.decode_dataframe(log)
-        tmp = bbs.decode_bbl(log)
-        try:
-            slow = bbs.load_csv(tmp)
-        finally:
-            tmp.unlink(missing_ok=True)
-        ok &= _check(
-            f"{log.name}: same columns & row count",
-            list(fast.columns) == list(slow.columns) and len(fast) == len(slow),
-            f"{len(fast)} vs {len(slow)} rows, {len(fast.columns)} cols",
-        )
+    step_res = step.analyse(df, signal.sample_rate(df), ["roll"])
+    ok &= _check("step_response returns the roll axis", "roll" in step_res)
     return ok
 
 
@@ -172,7 +139,6 @@ def main() -> int:
         test_blackbox_headers(),
         test_chirp(),
         test_analysers_smoke(),
-        test_decoder_equivalence(),
     ]
     print()
     if all(results):

@@ -31,7 +31,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-import blackbox_decoder as bb  # noqa: E402
+from betaflight_chirp_core import decoder as bb  # noqa: E402  (vendored; stdlib-only decode)
 import blackbox_presenter as pr  # noqa: E402
 
 # Header config keys worth surfacing in the human summary (when present).
