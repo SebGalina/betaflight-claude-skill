@@ -8,7 +8,7 @@
 
 A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies — and can also read and write directly to a live flight controller via the MCP server.
 
-> **Compute core.** All the blackbox/chirp number-crunching (decode, FRF/Bode, step response, spectral noise, the self-contained HTML report) lives in a separate public package, [`betaflight-chirp-core`](https://github.com/SebGalina/betaflight-chirp-core) (pinned **v0.1.4**) — the single source of truth, also shared with the FPVLogForge backend. The scripts in `scripts/` are thin CLI wrappers over it. The release zip **vendors** the package (via `build_skill_zip.py`), so claude.ai / zip users need nothing extra; only a manual `git clone` run needs it installed (see [Running the scripts manually](#running-the-scripts-manually)).
+> **Compute core.** All the blackbox/chirp number-crunching (decode, FRF/Bode, step response, spectral noise, the self-contained HTML report) lives in a separate public package, [`betaflight-chirp-core`](https://pypi.org/project/betaflight-chirp-core/) (pinned **0.1.6**) — the single source of truth, also shared with the FPVLogForge backend. The scripts in `scripts/` are thin CLI wrappers over it. The release zip **vendors** the package (via `build_skill_zip.py`), so claude.ai / zip users need nothing extra; only a manual `git clone` run needs it installed (see [Running the scripts manually](#running-the-scripts-manually)).
 
 ## What it does
 
@@ -94,7 +94,7 @@ In the terminal, install [uv](https://docs.astral.sh/uv/) (a fast Python package
 pip install uv
 ```
 
-Then run any script — uv automatically installs the required libraries (including `betaflight-chirp-core`, resolved from `pyproject.toml`) on the first run. The core installs from git, so make sure **`git` is on your PATH**:
+Then run any script — uv automatically installs the required libraries (including `betaflight-chirp-core`, from PyPI, resolved via `pyproject.toml`) on the first run:
 
 ```bash
 uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
@@ -114,11 +114,11 @@ source .venv/bin/activate
 
 # Install — choose one:
 pip install -r requirements.txt   # full (all scripts + core + eval runner)
-pip install numpy pandas scipy "betaflight-chirp-core @ git+https://github.com/SebGalina/betaflight-chirp-core@v0.1.4"  # scripts only
+pip install numpy pandas scipy betaflight-chirp-core==0.1.6  # scripts only
 pip install anthropic python-dotenv  # eval runner only
 ```
 
-The analysis scripts import `betaflight_chirp_core`, so it must be installed (the lines above pull it from git — `git` must be on PATH). If you have the [core repo](https://github.com/SebGalina/betaflight-chirp-core) checked out next to this one, use `pip install -e ../betaflight-chirp-core` instead for a live dev copy.
+The analysis scripts import `betaflight_chirp_core` (installed from PyPI by the lines above). If you have the [core repo](https://github.com/SebGalina/betaflight-chirp-core) checked out next to this one, use `pip install -e ../betaflight-chirp-core` instead for a live dev copy.
 
 After activation, use `python -m scripts.<name>` as shown below. Re-activate the venv in each new terminal session.
 
