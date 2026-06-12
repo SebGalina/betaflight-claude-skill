@@ -15,7 +15,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `step_response.py` and `analyze_blackbox.py` are now thin CLI wrappers over it.
   `build_skill_zip.py` vendors the package into the zip (the sandbox cannot
   pip-install), so behaviour is unchanged — outputs verified byte-for-byte against
-  the previous scripts.
+  the previous scripts. Bundles `betaflight-chirp-core` **v0.1.4** (shared,
+  mountable HTML report renderer assets under `report_assets/`).
 
 ### Removed
 - `blackbox_decoder.py` and `blackbox_signal.py` — replaced by the vendored
