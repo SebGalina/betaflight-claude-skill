@@ -8,6 +8,8 @@
 
 A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies — and can also read and write directly to a live flight controller via the MCP server.
 
+> **Compute core.** All the blackbox/chirp number-crunching (decode, FRF/Bode, step response, spectral noise, the self-contained HTML report) lives in a separate public package, [`betaflight-chirp-core`](https://github.com/SebGalina/betaflight-chirp-core) (pinned **v0.1.4**) — the single source of truth, also shared with the FPVLogForge backend. The scripts in `scripts/` are thin CLI wrappers over it. The release zip **vendors** the package (via `build_skill_zip.py`), so claude.ai / zip users need nothing extra; only a manual `git clone` run needs it installed (see [Running the scripts manually](#running-the-scripts-manually)).
+
 ## What it does
 
 Once loaded, the skill lets Claude:
@@ -92,7 +94,7 @@ In the terminal, install [uv](https://docs.astral.sh/uv/) (a fast Python package
 pip install uv
 ```
 
-Then run any script — uv automatically installs the required libraries on the first run:
+Then run any script — uv automatically installs the required libraries (including `betaflight-chirp-core`, resolved from `pyproject.toml`) on the first run. The core installs from git, so make sure **`git` is on your PATH**:
 
 ```bash
 uv run python -m scripts.chirp_analysis your_log.bbl --html report.html
@@ -111,10 +113,12 @@ source .venv/bin/activate
 .venv\Scripts\activate
 
 # Install — choose one:
-pip install -r requirements.txt   # full (all scripts + eval runner)
-pip install numpy pandas scipy    # scripts only
+pip install -r requirements.txt   # full (all scripts + core + eval runner)
+pip install numpy pandas scipy "betaflight-chirp-core @ git+https://github.com/SebGalina/betaflight-chirp-core@v0.1.4"  # scripts only
 pip install anthropic python-dotenv  # eval runner only
 ```
+
+The analysis scripts import `betaflight_chirp_core`, so it must be installed (the lines above pull it from git — `git` must be on PATH). If you have the [core repo](https://github.com/SebGalina/betaflight-chirp-core) checked out next to this one, use `pip install -e ../betaflight-chirp-core` instead for a live dev copy.
 
 After activation, use `python -m scripts.<name>` as shown below. Re-activate the venv in each new terminal session.
 
@@ -176,7 +180,7 @@ The firmware debug mapping is auto-detected (current BF logs only `debug[0]`; th
 
 ## Blackbox log analysis
 
-`scripts/analyze_blackbox.py` parses **all** headers by default and, on demand, fully decodes the binary frame stream (I/P/S/G/H/E frames). The decoder (`scripts/blackbox_decoder.py`) is a faithful pure-Python port of the official [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — every field encoding and predictor.
+`scripts/analyze_blackbox.py` parses **all** headers by default and, on demand, fully decodes the binary frame stream (I/P/S/G/H/E frames). The decoder lives in the `betaflight_chirp_core` package (`betaflight_chirp_core.decoder`) — a faithful pure-Python port of the official [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer), every field encoding and predictor.
 
 ```bash
 python -m scripts.analyze_blackbox log.bbl              # headers + build summary (fast, stdlib only)
@@ -332,16 +336,14 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   ├── fetch_presets.py      Fetch + filter official presets from betaflight/firmware-presets
 │   ├── parse_diff.py         Parser for CLI diff/dump output
 │   ├── validate_config.py    Config sanity checker
-│   ├── analyze_blackbox.py   Blackbox analyzer (CLI entry point)
-│   ├── blackbox_decoder.py   Pure-Python blackbox frame decoder
+│   ├── analyze_blackbox.py   Blackbox analyzer CLI — thin wrapper over betaflight-chirp-core
 │   ├── blackbox_presenter.py Human-readable scaling + enum decoding
-│   ├── blackbox_signal.py    Shared decode/load/sample-rate/activity helpers for the analysers
-│   ├── step_response.py      Closed-loop step response (Welch cross-spectral method)
-│   ├── spectral_analysis.py  Noise spectrum / FFT peaks + harmonics (gyro / D-term)
-│   ├── chirp_analysis.py     Chirp Bode (gain/phase/coherence) + throttle resonance map
+│   ├── step_response.py      Closed-loop step response — thin wrapper over betaflight-chirp-core
+│   ├── spectral_analysis.py  Noise spectrum / FFT peaks + harmonics — thin wrapper over betaflight-chirp-core
+│   ├── chirp_analysis.py     Chirp Bode + throttle resonance map + HTML report — thin wrapper over betaflight-chirp-core
 │   ├── run_evals.py          Automated eval runner (Claude API + judge model)
 │   ├── selftest.py           Stdlib-only smoke test for the scripts
-│   ├── build_skill_zip.py    Build the runtime-only distributable zip
+│   ├── build_skill_zip.py    Build the runtime-only distributable zip (vendors the core into it)
 │   └── test/                 Local blackbox fixtures (git-ignored; see its README)
 ├── assets/
 │   └── presets/              Starter CLI configs
@@ -353,6 +355,8 @@ The runner exits with code 0 if all evals pass, 1 if any fail (CI-friendly).
 │   └── sample_diff.txt       Sample CLI diff used by eval #3
 └── .github/workflows/        CI: attach the skill zip to each published release
 ```
+
+The compute package `betaflight_chirp_core` is **not** stored in this source tree — it's an external dependency (installed via `requirements.txt` for manual runs, or **vendored** into `scripts/betaflight_chirp_core/` of the release zip at build time by `build_skill_zip.py`).
 
 ## Usage examples
 
@@ -404,7 +408,8 @@ Apache 2.0 — see [LICENSE.txt](LICENSE.txt).
 
 - [Betaflight](https://betaflight.com/) — official project
 - [Betaflight documentation](https://betaflight.com/docs)
-- [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — the decoder this skill ports
+- [betaflight-chirp-core](https://github.com/SebGalina/betaflight-chirp-core) — the compute core this skill wraps
+- [blackbox-log-viewer](https://github.com/betaflight/blackbox-log-viewer) — the decoder the core ports
 - [Claude Skills documentation](https://platform.claude.com/docs/en/agents-and-tools/agent-skills/overview)
 
 ## Disclaimer
