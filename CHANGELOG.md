@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.2] — 2026-06-15
+
+### Changed
+- **Chirp result presentation policy.** New SKILL.md section "Presenting chirp
+  analysis results": lead with indicator values (Ms, step metrics, noise margin),
+  not the composite score; prefer the **sensitivity peak Ms** as the primary
+  stability indicator (with its report thresholds and a short explanation);
+  **avoid the scalar phase margin** — likely a false positive when the low end of
+  the Bode is noisy — and cite the guaranteed margin from Ms instead; frame the
+  score as relative to a single tuning exercise; on multi-pass, show a parameter
+  table flagging what moved alongside the per-pass indicators.
+- `references/chirp-tuning.md`: added a "Sensitivity peak Ms — the primary
+  stability indicator" subsection and demoted phase margin to "secondary, use
+  with care" with a hardened false-positive caveat. Docs only.
+
 ## [0.8.1] — 2026-06-12
 
 ### Changed

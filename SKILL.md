@@ -139,6 +139,29 @@ Workflow when a user shares a log:
 → Full spectral_analysis invocation: `scripts/spectral_analysis.py --help`
 → Full step_response invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
 
+### Presenting chirp analysis results
+
+When you receive a chirp analysis result (the `chirp_analysis.py` report or the `analyze_chirp` MCP summary), present it like this:
+
+1. **Lead with the indicator values, not the score.** Open on the measured numbers per axis — sensitivity peak Ms, step overshoot / rise / settling, HF noise margin, resonance peaks. The composite **score is a second-plane footnote**, not the headline.
+
+2. **Sensitivity peak Ms is the primary stability indicator — prefer it.** It is the most reliable single number. Quote `ms` (and the fragile frequency `f_ms_hz`) and **explain it briefly when you use it**: Ms = max|S(f)|, how much the loop amplifies disturbances at its weakest point. Thresholds from the report: **Ms ≲ 1.5 comfortable/damped, ~2 marginal, >2 it rings** (step overshoot climbs, propwash sets in).
+
+3. **Avoid the phase margin as much as possible.** Especially when the **low end of the Bode is noisy** (low coherence / jagged curve near the 0 dB crossover) — the scalar margin there is a likely **false positive**. If a margin must be cited, use the **guaranteed margin from Ms** (`pm_guaranteed_deg`), not the 0 dB-crossover number. Do not build a verdict on the raw phase margin.
+
+4. **Frame the score as relative, never absolute.** State plainly that the composite 0–100 note only has meaning **within the same tuning exercise** (this craft, comparable flights) and is "to read with the plots, not in place of them — a number is no substitute for the stick feel." It is most **telling across multiple passes**, where the delta vs the previous pass shows whether the change helped.
+
+5. **Multi-pass: recall the parameters and highlight what moved.** When several passes exist, show a table of the tuning parameters with the value at each pass and flag the ones that **changed since the last pass**, so the indicator delta is read against the actual change:
+
+   | Param | Pass N-1 | Pass N | Δ |
+   |-------|----------|--------|---|
+   | `p_pitch` | 47 | 52 | **+5** |
+   | `d_pitch` | 38 | 38 | — |
+
+   Pair it with the per-pass indicators (Ms, f_Ms, relative score) so cause (param change) and effect (indicator move) sit side by side. For passes to be comparable, remind the user to enable `vbat_sag_compensation` and/or fly at a similar battery level.
+
+→ Indicator definitions and thresholds (Ms, phase margin caveat, scoring): `references/chirp-tuning.md`
+
 ### Presenting rates and human-readable values
 
 Both `analyze_blackbox.py` (`--stats`, `--json`) and `parse_diff.py` already decode raw values into human-readable form — degrees/second, volts, amps, throttle %, rpm, and enum names (e.g. `rates_type 3 → ACTUAL`, `fast_pwm_protocol 7 → DSHOT600`). **Prefer these presented values over raw integers** when answering the user. CSV export stays raw on purpose (for external analysis tools).

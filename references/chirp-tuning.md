@@ -131,12 +131,28 @@ a too-short excitation or a noisy axis will show low coherence and an unreadable
 - **Roll-off at the top of the band** → the low-pass filters. Expected; too early a roll-off
   means over-filtering (extra delay).
 
-### Phase (deg) and phase margin
+### Sensitivity peak Ms — the primary stability indicator
 
-Phase falls as frequency rises (delay). The **phase margin** is the distance of the phase from
-−180° at the frequency where gain crosses 0 dB. Roughly: **≥30° healthy, 15–30° marginal,
-<15° rings.** A low margin means the loop is close to sustained oscillation — reduce gains or
-add filtering.
+`Ms = max|S(f)|`, where `S = 1/(1+L) = 1 − T` is the sensitivity function (`T` is the closed-loop
+FRF the chirp measures). It is **the robustness headline and the indicator to prefer** — a single
+reliable number, unlike the scalar phase margin. Physically Ms is how much the loop *amplifies*
+disturbances at its most fragile frequency `f(Ms)` (the vertical marker on the plots). By Bode's
+integral `Ms ≥ 1` always, and it bounds the phase margin from below: `PM ≥ 2·arcsin(1/(2·Ms))`.
+
+Rules of thumb (these are the report's thresholds): **Ms ≲ 1.5 comfortable and damped; ~2
+marginal; >2 it rings** (step overshoot climbs, propwash sets in). Lower Ms by restoring margin —
+less P/D, or more filtering ahead of the PIDs. **Explain Ms briefly whenever you quote it**, and
+quote `f(Ms)` with it so the user knows where the loop is weakest.
+
+### Phase margin — secondary, use with care
+
+Phase falls as frequency rises (delay). The classic **phase margin** is the distance of the phase
+from −180° at the 0 dB crossover (≥30° healthy, 15–30° marginal, <15° rings). **Avoid relying on
+it.** The phase is steep at the crossover, so the scalar is fragile, and when the **low end of the
+Bode is noisy** (low coherence / jagged curve) the reported margin is a likely **false positive**.
+Prefer Ms. If a margin must be cited, use the **guaranteed margin derived from Ms**
+(`pm_guaranteed_deg`, `PM ≥ 2·arcsin(1/2·Ms)`) anchored at `f(Ms)`, not the bare 0 dB-crossover
+number — and compare overlaid curves / step response for before-after rather than the scalar.
 
 ---
 
