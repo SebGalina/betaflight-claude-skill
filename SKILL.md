@@ -258,7 +258,7 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 - `references/configuration.md` — Configurator tab navigation: what each tab does, all documentation URLs
 - `references/version-changes.md` — Migration notes between major versions
 - `scripts/parse_diff.py` — Parser for CLI diff/dump output
-- `scripts/betaflight_chirp_core/` — Vendored compute core (pinned **0.1.6**, from PyPI), the single source of truth shared with the FPVLogForge backend: pure-Python `.bbl` decoder (faithful port of the official log-viewer), signal helpers, chirp FRF/Bode + step + spectral analysis, and the self-contained bilingual HTML report renderer (`report_assets/`). The analysis scripts below are thin CLI wrappers over it.
+- `scripts/betaflight_chirp_core/` — Vendored compute core (pinned **0.1.7**, from PyPI), the single source of truth shared with the FPVLogForge backend: pure-Python `.bbl` decoder (faithful port of the official log-viewer), signal helpers, chirp FRF/Bode + step + spectral analysis, and the self-contained bilingual HTML report renderer (`report_assets/`). The analysis scripts below are thin CLI wrappers over it.
 - `scripts/analyze_blackbox.py` — Blackbox log analyzer CLI (thin wrapper over `betaflight_chirp_core`): parses all headers, decodes the full frame stream on demand, per-field stats and CSV export
 - `scripts/blackbox_presenter.py` — Human-readable presentation layer: scales raw values to physical units, decodes enum headers, and computes rates in °/s; used by `analyze_blackbox.py` and `parse_diff.py`
 - `scripts/validate_config.py` — Sanity-check a CLI dump for common errors

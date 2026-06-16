@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.8.2] — 2026-06-15
+## [0.8.3] — 2026-06-16
+
+### Changed
+- Bump bundled `betaflight-chirp-core` to **0.1.7** (`betaflight-chirp-core==0.1.7`,
+  pinned from PyPI). Core 0.1.6→0.1.7 upgrades the **HTML report renderer**:
+  interactive legend → plot highlighting (hover a filter entry to highlight it
+  across Bode-gain, phase, coherence and noise-PSD plots, shared markers), an
+  interactive "untrusted zone" legend entry on Bode plots, zoom tooltips on the
+  gyro noise-PSD curves (nearby frequency peaks + filtering details), and zoom
+  views on the f(Ms) line (gain/sensitivity with local ordinate scales). Multi-pass
+  reports now show bare basenames for source `.bbl` file names (pass pills,
+  tooltips, comparison headers) and pass-pill clicks keep scroll position. Public
+  API unchanged, so the skill wrappers are untouched.
 
 ### Changed
 - **Chirp result presentation policy.** New SKILL.md section "Presenting chirp
