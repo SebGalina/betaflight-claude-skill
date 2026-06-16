@@ -115,7 +115,7 @@ source .venv/bin/activate
 
 # Install — choose one:
 pip install -r requirements.txt   # full (all scripts + core + eval runner)
-pip install numpy pandas scipy betaflight-chirp-core==0.1.6  # scripts only
+pip install numpy pandas scipy betaflight-chirp-core==0.1.7  # scripts only
 pip install anthropic python-dotenv  # eval runner only
 ```
 
