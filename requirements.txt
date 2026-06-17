@@ -5,7 +5,7 @@ pandas>=2.0.0
 scipy>=1.10.0
 
 # compute core — the single source of truth (decoder + chirp/step/spectral + HTML report).
-betaflight-chirp-core==0.1.7
+betaflight-chirp-core==0.1.8
 
 # run_evals.py
 anthropic>=0.40.0
