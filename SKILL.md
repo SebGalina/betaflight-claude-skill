@@ -1,6 +1,6 @@
 ---
 name: betaflight
-description: "Use whenever the user mentions Betaflight, FPV drone firmware, flight-controller config, PID/filter/rates tuning, or blackbox log analysis — or shares a Betaflight artifact: a CLI diff/dump (lines like 'diff all', 'set ', 'feature ', 'resource ') or a .bbl/.bfl blackbox log, even when not named as such. Covers flight symptoms (oscillations, wobble, propwash, jello, hot motors, drift), motor/ESC and RX/ELRS/CRSF setup, builds from 3\" to 10\" (cinewhoop, tinywhoop, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and configuring a new drone from scratch (setup wizard). Trigger even when phrased casually (\"mon drone wobble\", \"PID help\", \"config FC\") — under-triggering is worse than over-triggering."
+description: "Use whenever the user mentions Betaflight, FPV drone firmware, flight-controller config, PID/filter/rates tuning, or blackbox log analysis — or shares a Betaflight artifact: a CLI diff/dump (lines like 'diff all', 'set ', 'feature ', 'resource ') or a .bbl/.bfl blackbox log, even when not named as such — or runs a chirp tuning session via Sweep Studio / FPVLogForge (a chirp log ID to analyse, 'analyse log', 'résultat chirp', iterative Bode/step/Ms tuning). Covers flight symptoms (oscillations, wobble, propwash, jello, hot motors, drift), motor/ESC and RX/ELRS/CRSF setup, builds from 3\" to 10\" (cinewhoop, tinywhoop, longrange, X-class), version migrations (4.4 → 4.5 → 4.6), and configuring a new drone from scratch (setup wizard). Trigger even when phrased casually (\"mon drone wobble\", \"PID help\", \"config FC\") — under-triggering is worse than over-triggering."
 ---
 
 # Betaflight Assistant
@@ -139,6 +139,20 @@ Workflow when a user shares a log:
 → Full spectral_analysis invocation: `scripts/spectral_analysis.py --help`
 → Full step_response invocation, signal-quality flags, and the coherence warning to relay to users: `references/pid-tuning.md`
 
+## Guided chirp tuning session (Sweep Studio)
+
+Trigger when the user provides a **Sweep Studio log ID** — phrases like _"analyse log ABC123"_, _"nouveau vol chirp"_, _"résultat : XYZ"_, or any alphanumeric ID associated with a Sweep Studio / FPVLogForge chirp run.
+
+1. Call `mcp__claude_ai_sweep-studio__analyze_chirp(id=<id>)` to retrieve the structured résumé.
+2. Follow the iterative session protocol (turn headers, phase 1–4, decision rules, output format): → `references/chirp-session.md`
+3. For metric definitions and thresholds (Ms, ϕm, Mt, grade bands, etc.): → `references/chirp_metrics_reference.md`
+
+**Connector required**: `analyze_chirp` is served by the **Sweep Studio MCP connector** (enabled via claude.ai connectors or the Claude Code MCP config) — tool `mcp__claude_ai_sweep-studio__analyze_chirp`. If the tool is **absent**, the connector is not enabled: tell the user to add it, **or** fall back to a local analysis of the raw `.bbl` with `python -m scripts.chirp_analysis <log.bbl> --html report.html` (no connector or remote ID needed — see "Analyzing a blackbox log" step 7).
+
+Session is turn-based: analyze → prescribe → fly → repeat. ≤ 3 parameter changes per turn. Sign-off at grade ≥ A or stable B+ with no reds.
+
+---
+
 ### Presenting chirp analysis results
 
 When you receive a chirp analysis result (the `chirp_analysis.py` report or the `analyze_chirp` MCP summary), present it like this:
@@ -247,6 +261,8 @@ Always invoke scripts from the skill root using the module form: `python -m scri
 
 ## Bundled resources
 
+- `references/chirp-session.md` — Guided chirp tuning session protocol: turn-based workflow (phase 1–4), decision rules table, output format templates, hard constraints
+- `references/chirp_metrics_reference.md` — Metric definitions and thresholds for chirp analysis: Ms, ϕm, Mt, grade bands, Bode fields
 - `references/arming-flags.md` — All arming prevention flags: codes, causes, fixes, common pitfalls
 - `references/mcu-usb-drivers.md` — Common MCUs (STM32, AT32, APM32, GD32), VCP and DFU drivers per OS, Zadig, ImpulseRC Driver Fixer, COM-port-not-found diagnostics
 - `references/mcp-tools.md` — Full MCP tool catalogue, write pattern, error handling, RC mapping protocol

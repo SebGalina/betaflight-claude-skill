@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.5] — 2026-06-18
+
+### Added
+- Guided chirp tuning session protocol triggered by a Sweep Studio log ID: turn-based `analyze → prescribe → fly` cycle (phases baseline / iterate / convergence / sign-off), decision-rules table, and per-turn output templates — new `references/chirp-session.md` and `references/chirp_metrics_reference.md`, with a routing section in `SKILL.md`.
+- Connector awareness for the chirp session: `SKILL.md` now states `analyze_chirp` is served by the Sweep Studio MCP connector and documents a local `chirp_analysis.py` fallback when the connector is absent.
+
+### Changed
+- Skill `description` now triggers on a chirp tuning session (Sweep Studio / FPVLogForge log ID, "analyse log", "résultat chirp") so a bare log ID reliably loads the skill.
+
+### Fixed
+- Chirp reference coherence: `ms` documented as a linear ratio (≥ 1; green < 1.5 / amber 1.5–2 / red > 2) instead of dB, and the `rise_ms` red threshold aligned to > 35 ms across `chirp-session.md` and `chirp_metrics_reference.md`.
+
 ## [0.8.4] — 2026-06-17
 
 ### Changed
