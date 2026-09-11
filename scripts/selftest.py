@@ -3,6 +3,11 @@
 
 Run from the skill root:  python -m scripts.selftest
 
+Runs on the standard library alone: the checks that need `betaflight_chirp_core`
+or numpy/pandas/scipy SKIP cleanly when those are absent, so a fresh clone still
+passes. On Python < 3.10 it stops early with an explicit message instead of a
+bare ModuleNotFoundError (the core cannot be installed on 3.9 at all).
+
 Always tests parse_diff + validate_config against the committed fixture
 (evals/sample_diff.txt). If any *.bbl logs are present in scripts/test/, it also
 header-parses them as a blackbox-decoder regression check. Those logs are large
@@ -14,8 +19,13 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from scripts import analyze_blackbox as ab
-from scripts import parse_diff, validate_config
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from _core_import import core_available, require_python  # noqa: E402
+
+require_python()  # explicit message instead of a SyntaxError from the imports below
+
+from scripts import parse_diff, validate_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE_DIFF = ROOT / "evals" / "sample_diff.txt"
@@ -51,6 +61,11 @@ def test_blackbox_headers() -> bool:
     if not logs:
         print("  [SKIP] no local .bbl fixtures (see scripts/test/README.md)")
         return True
+    if not core_available():
+        print("  [SKIP] betaflight_chirp_core not installed (pip install -r requirements.txt)")
+        return True
+    from scripts import analyze_blackbox as ab  # imports the core — keep it lazy
+
     ok = True
     for log in logs:
         result = ab.analyze(log, decode=False, want_stats=False, session_sel=None)
@@ -70,6 +85,9 @@ def test_chirp() -> bool:
         import numpy, pandas, scipy  # noqa: F401  (heavy deps; skip cleanly if absent)
     except ImportError:
         print("  [SKIP] numpy/pandas/scipy not installed")
+        return True
+    if not core_available():
+        print("  [SKIP] betaflight_chirp_core not installed (pip install -r requirements.txt)")
         return True
     log = BBL_DIR / "btfl_chirp.bbl"
     if not log.exists():
@@ -102,6 +120,9 @@ def test_analysers_smoke() -> bool:
         import scipy  # noqa: F401
     except ImportError:
         print("  [SKIP] numpy/pandas/scipy not installed")
+        return True
+    if not core_available():
+        print("  [SKIP] betaflight_chirp_core not installed (pip install -r requirements.txt)")
         return True
 
     from betaflight_chirp_core import signal

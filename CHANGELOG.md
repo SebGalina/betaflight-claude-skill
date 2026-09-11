@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Manual-clone install docs: the `betaflight-chirp-core` pin is no longer written
+  by hand in three places that had drifted apart (README prose said 0.1.6, the
+  README `pip install` line said 0.1.7, `pyproject.toml` said 0.1.8). The version
+  is now declared once in `pyproject.toml`; the README points at it and installs
+  via `requirements.txt` (#11).
+- The Python 3.10 requirement is stated **before** the install commands instead of
+  after them, and names the trap it exists for: the default `python3` on macOS is
+  3.9, where pip cannot install the core at all and reports `No matching
+  distribution found`, which reads as a missing PyPI release (#11).
+
+### Added
+- `scripts/_core_import.py` — stdlib-only import guard used by the four analysis
+  CLIs and the self-test. A missing compute core now explains whether the cause is
+  an interpreter older than 3.10 (uninstallable) or a plain missing install, instead
+  of a bare `ModuleNotFoundError: No module named 'betaflight_chirp_core'` (#11).
+
+### Changed
+- `scripts/selftest.py` imports the core lazily and skips the checks that need it,
+  so a fresh clone with nothing installed runs the stdlib checks and passes — as its
+  docstring already promised — instead of dying at import time.
+
 ## [0.8.5] — 2026-06-18
 
 ### Added
