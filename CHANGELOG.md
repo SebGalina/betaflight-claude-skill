@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- Bump the pinned `betaflight-chirp-core` to **0.4.1** (from 0.1.8), picking up
+  the filter-quality rework (0.2.0), the analytic preservation metric and D-term
+  SNR (0.3.0), and the PIDscope-parity analysis (0.4.0) — plus the pandas 3 fix
+  that 0.4.1 itself carries: before it, the chirp HTML report crashed on any log
+  with eRPM as soon as pandas 3 was installed, which is what a fresh environment
+  resolves today.
+
+  Verified against the published wheel on pandas 3.0.5: self-test green,
+  `analyze_blackbox --stats` / `spectral_analysis` / `step_response` produce
+  output identical to 0.1.8's on a 16 MB reference log, and the chirp report
+  renders end to end (658 KB, up from 425 KB — the blocks added across
+  0.2.0-0.4.0).
+
 ### Fixed
 - Manual-clone install docs: the `betaflight-chirp-core` pin is no longer written
   by hand in three places that had drifted apart (README prose said 0.1.6, the
