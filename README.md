@@ -9,7 +9,7 @@
 
 A [Claude](https://claude.ai) skill that helps you configure, tune, analyze, and troubleshoot FPV drones running Betaflight firmware. It works from the artifacts you already have — CLI dumps, blackbox logs, and plain-language descriptions of how the quad flies — and can also read and write directly to a live flight controller via the MCP server.
 
-> **Compute core.** All the blackbox/chirp number-crunching (decode, FRF/Bode, step response, spectral noise, the self-contained HTML report) lives in a separate public package, [`betaflight-chirp-core`](https://pypi.org/project/betaflight-chirp-core/) (pinned **0.1.6**) — the single source of truth, also shared with the FPVLogForge backend. The scripts in `scripts/` are thin CLI wrappers over it. The release zip **vendors** the package (via `build_skill_zip.py`), so claude.ai / zip users need nothing extra; only a manual `git clone` run needs it installed (see [Running the scripts manually](#running-the-scripts-manually)).
+> **Compute core.** All the blackbox/chirp number-crunching (decode, FRF/Bode, step response, spectral noise, the self-contained HTML report) lives in a separate public package, [`betaflight-chirp-core`](https://pypi.org/project/betaflight-chirp-core/) (the exact pinned version lives in [`pyproject.toml`](pyproject.toml) — the single place it is declared) — the single source of truth, also shared with the FPVLogForge backend. The scripts in `scripts/` are thin CLI wrappers over it. The release zip **vendors** the package (via `build_skill_zip.py`), so claude.ai / zip users need nothing extra; only a manual `git clone` run needs it installed (see [Running the scripts manually](#running-the-scripts-manually)).
 
 ## What it does
 
@@ -104,6 +104,19 @@ uv run python -m scripts.analyze_blackbox your_log.bbl --stats
 
 ##### With venv + pip
 
+> **Python 3.10 or later is required** — both by the scripts (they use `X | Y` union
+> type syntax) and by `betaflight-chirp-core`, which declares `requires-python >=3.10`.
+> **On macOS, the system `python3` is still 3.9** (the one shipped with Xcode's command
+> line tools), and that is the trap: pip finds no installable candidate on 3.9 and fails
+> with `No matching distribution found for betaflight-chirp-core`, which reads like the
+> package or the version is missing from PyPI when in fact the interpreter is too old.
+> Check before creating the venv, and build it with an explicit interpreter if needed:
+>
+> ```bash
+> python3 --version          # must print 3.10 or later
+> python3.12 -m venv .venv   # if the default python3 is older
+> ```
+
 ```bash
 python -m venv .venv
 
@@ -114,18 +127,19 @@ source .venv/bin/activate
 .venv\Scripts\activate
 
 # Install — choose one:
-pip install -r requirements.txt   # full (all scripts + core + eval runner)
-pip install numpy pandas scipy betaflight-chirp-core==0.1.7  # scripts only
+pip install -r requirements.txt      # full (all scripts + core + eval runner)
 pip install anthropic python-dotenv  # eval runner only
 ```
+
+`requirements.txt` carries the `betaflight-chirp-core` pin, mirrored from `pyproject.toml`
+— install from it rather than naming a version by hand, so the version you get is always
+the one this release was tested against.
 
 The analysis scripts import `betaflight_chirp_core` (installed from PyPI by the lines above). If you have the [core repo](https://github.com/SebGalina/betaflight-chirp-core) checked out next to this one, use `pip install -e ../betaflight-chirp-core` instead for a live dev copy.
 
 After activation, use `python -m scripts.<name>` as shown below. Re-activate the venv in each new terminal session.
 
-`fetch_presets.py`, `parse_diff.py`, `validate_config.py`, and `selftest.py` use the standard library only — no install needed.
-
-**Python 3.10+ required** (the scripts use `X | Y` union type syntax).
+`fetch_presets.py`, `parse_diff.py`, and `validate_config.py` use the standard library only — no install needed, and `python -m scripts.selftest` runs on the stdlib alone (it skips the checks whose dependencies are absent).
 
 ### Commands
 

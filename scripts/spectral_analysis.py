@@ -23,6 +23,9 @@ from pathlib import Path
 # Vendored next to this script in the distributed skill; pip-installed in dev.
 sys.path.insert(0, str(Path(__file__).parent))
 
+from _core_import import require_core  # noqa: E402
+require_core()
+
 from betaflight_chirp_core import decode, signal  # noqa: E402
 from betaflight_chirp_core.analysis import spectral  # noqa: E402
 from betaflight_chirp_core.signal import AXES  # noqa: E402

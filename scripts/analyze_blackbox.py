@@ -31,6 +31,9 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
+from _core_import import require_core  # noqa: E402
+require_core()
+
 from betaflight_chirp_core import decoder as bb  # noqa: E402  (vendored; stdlib-only decode)
 import blackbox_presenter as pr  # noqa: E402
 
